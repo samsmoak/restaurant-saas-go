@@ -112,9 +112,9 @@ func RegisterRoutes(srv *FiberServer) {
 	// Stripe webhook (no auth, raw body)
 	api.Post("/stripe/webhook", paymentController.Webhook)
 
-	// Per-tenant public + customer endpoints under /api/r/:slug/*
+	// Per-tenant public + customer endpoints under /api/r/:restaurant_id/*
 	tenantResolver := middleware.ResolveTenantFromPath(restRepo)
-	tenant := api.Group("/r/:slug", tenantResolver)
+	tenant := api.Group("/r/:restaurant_id", tenantResolver)
 	menuController.RegisterPublicRoutes(tenant.Group("/menu"))
 	restController.RegisterPublicRoutes(tenant.Group("/restaurant"))
 	orderController.RegisterPublicRoutes(tenant.Group("/orders"))

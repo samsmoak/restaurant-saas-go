@@ -48,6 +48,6 @@ set_secret AWS_ACCESS_KEY_ID         "AWS access key id"
 set_secret AWS_SECRET_ACCESS_KEY     "AWS secret access key"
 set_secret S3_PUBLIC_BASE_URL        "Public CDN base URL (or blank)" no
 set_secret ADMIN_LEGACY_INVITE_CODE  "Bootstrap admin invite code (optional)"
-set_secret ADMIN_LEGACY_RESTAURANT_SLUG "Bootstrap restaurant slug for legacy invite (optional)" no
+set_secret ADMIN_LEGACY_RESTAURANT_ID "Bootstrap restaurant ObjectID for legacy invite (optional)" no
 
 echo "done."

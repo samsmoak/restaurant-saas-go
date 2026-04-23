@@ -45,7 +45,6 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "user_id", Value: 1}}, Options: options.Index().SetUnique(true)},
 		},
 		"restaurants": {
-			{Keys: bson.D{{Key: "slug", Value: 1}}, Options: options.Index().SetUnique(true)},
 			{Keys: bson.D{{Key: "owner_id", Value: 1}}},
 		},
 		"admin_users": {
@@ -79,5 +78,41 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			log.Printf("database.EnsureIndexes: %s: %v", coll, err)
 		}
 	}
+
+	// Drop legacy `slug` unique index if it still exists from a prior deploy.
+	// We no longer use slug — the restaurant's ObjectID is the tenant key.
+	if err := dropLegacyIndex(ctx, db, "restaurants", "slug_1"); err != nil {
+		log.Printf("database.EnsureIndexes: drop restaurants.slug_1: %v", err)
+	}
 	return nil
+}
+
+// dropLegacyIndex removes an index by name if it exists; ignores "not found"
+// errors so this is safe to call on fresh clusters.
+func dropLegacyIndex(ctx context.Context, db *mongo.Database, collection, indexName string) error {
+	_, err := db.Collection(collection).Indexes().DropOne(ctx, indexName)
+	if err == nil {
+		log.Printf("database: dropped legacy index %s.%s", collection, indexName)
+		return nil
+	}
+	// IndexNotFound is error code 27; also tolerate NamespaceNotFound (26).
+	if mongo.IsDuplicateKeyError(err) {
+		return nil
+	}
+	// Swallow if the error message indicates the index doesn't exist.
+	msg := err.Error()
+	if contains(msg, "index not found") || contains(msg, "IndexNotFound") ||
+		contains(msg, "ns does not exist") || contains(msg, "NamespaceNotFound") {
+		return nil
+	}
+	return err
+}
+
+func contains(s, sub string) bool {
+	for i := 0; i+len(sub) <= len(s); i++ {
+		if s[i:i+len(sub)] == sub {
+			return true
+		}
+	}
+	return false
 }

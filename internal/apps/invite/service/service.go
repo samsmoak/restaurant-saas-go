@@ -84,13 +84,7 @@ func (s *inviteService) Create(ctx context.Context, restaurantID, createdBy prim
 	if _, err := s.repo.Create(ctx, doc); err != nil {
 		return nil, fmt.Errorf("InviteService.Create: %w", err)
 	}
-	slug := ""
-	if s.restRepo != nil {
-		if r, err := s.restRepo.GetByID(ctx, restaurantID); err == nil && r != nil {
-			slug = r.Slug
-		}
-	}
-	return &InviteWithShare{AdminInvite: doc, ShareURL: buildShareURL(slug, code)}, nil
+	return &InviteWithShare{AdminInvite: doc, ShareURL: buildShareURL(code)}, nil
 }
 
 func (s *inviteService) Revoke(ctx context.Context, restaurantID primitive.ObjectID, id string) error {
@@ -124,7 +118,7 @@ func generateInviteCode(n int) (string, error) {
 	return string(out), nil
 }
 
-func buildShareURL(slug, code string) string {
+func buildShareURL(code string) string {
 	adminURL := strings.TrimRight(os.Getenv("ADMIN_APP_URL"), "/")
 	if adminURL == "" {
 		adminURL = strings.TrimRight(os.Getenv("APP_URL"), "/")
@@ -132,5 +126,5 @@ func buildShareURL(slug, code string) string {
 	if adminURL == "" {
 		adminURL = "http://localhost:3001"
 	}
-	return fmt.Sprintf("%s/onboard?invite=%s&slug=%s", adminURL, code, slug)
+	return fmt.Sprintf("%s/onboard?mode=claim&invite=%s", adminURL, code)
 }

@@ -27,7 +27,6 @@ import (
 
 type Membership struct {
 	RestaurantID   string `json:"restaurant_id"`
-	RestaurantSlug string `json:"restaurant_slug"`
 	RestaurantName string `json:"restaurant_name"`
 	Role           string `json:"role"`
 }
@@ -50,10 +49,9 @@ type AuthService interface {
 }
 
 type FinalizeResult struct {
-	RestaurantID   string `json:"restaurant_id"`
-	RestaurantSlug string `json:"restaurant_slug"`
-	Token          string `json:"token"`
-	Role           string `json:"role"`
+	RestaurantID string `json:"restaurant_id"`
+	Token        string `json:"token"`
+	Role         string `json:"role"`
 }
 
 type authService struct {
@@ -253,16 +251,13 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 		return nil, err
 	}
 	restMap := make(map[primitive.ObjectID]string, len(restaurants))
-	slugMap := make(map[primitive.ObjectID]string, len(restaurants))
 	for _, r := range restaurants {
 		restMap[r.ID] = r.Name
-		slugMap[r.ID] = r.Slug
 	}
 	out := make([]Membership, 0, len(rows))
 	for _, row := range rows {
 		out = append(out, Membership{
 			RestaurantID:   row.RestaurantID.Hex(),
-			RestaurantSlug: slugMap[row.RestaurantID],
 			RestaurantName: restMap[row.RestaurantID],
 			Role:           row.Role,
 		})
@@ -280,16 +275,21 @@ func (s *authService) AdminFinalize(ctx context.Context, userID string, userEmai
 		return nil, errors.New("invalid user id")
 	}
 
-	// Legacy env bootstrap: claims against LEGACY_RESTAURANT_SLUG + LEGACY_INVITE_CODE.
+	// Legacy env bootstrap: claim against ADMIN_LEGACY_RESTAURANT_ID +
+	// ADMIN_LEGACY_INVITE_CODE. Use only once, then unset both.
 	legacyCode := os.Getenv("ADMIN_LEGACY_INVITE_CODE")
-	legacySlug := os.Getenv("ADMIN_LEGACY_RESTAURANT_SLUG")
-	if legacyCode != "" && code == legacyCode && legacySlug != "" {
-		r, err := s.restRepo.FindBySlug(ctx, legacySlug)
+	legacyRestID := os.Getenv("ADMIN_LEGACY_RESTAURANT_ID")
+	if legacyCode != "" && code == legacyCode && legacyRestID != "" {
+		oid, err := primitive.ObjectIDFromHex(legacyRestID)
+		if err != nil {
+			return nil, fmt.Errorf("ADMIN_LEGACY_RESTAURANT_ID is not a valid ObjectID")
+		}
+		r, err := s.restRepo.GetByID(ctx, oid)
 		if err != nil {
 			return nil, err
 		}
 		if r == nil {
-			return nil, fmt.Errorf("legacy restaurant '%s' not found", legacySlug)
+			return nil, fmt.Errorf("legacy restaurant '%s' not found", legacyRestID)
 		}
 		if err := s.upsertAdminUser(ctx, userOID, userEmail, r.ID, adminModel.RoleAdmin); err != nil {
 			return nil, err
@@ -300,7 +300,7 @@ func (s *authService) AdminFinalize(ctx context.Context, userID string, userEmai
 		if err != nil {
 			return nil, err
 		}
-		return &FinalizeResult{RestaurantID: r.ID.Hex(), RestaurantSlug: r.Slug, Token: token, Role: adminModel.RoleAdmin}, nil
+		return &FinalizeResult{RestaurantID: r.ID.Hex(), Token: token, Role: adminModel.RoleAdmin}, nil
 	}
 
 	var result *FinalizeResult
@@ -344,7 +344,7 @@ func (s *authService) AdminFinalize(ctx context.Context, userID string, userEmai
 		if err != nil {
 			return nil, err
 		}
-		result = &FinalizeResult{RestaurantID: r.ID.Hex(), RestaurantSlug: r.Slug, Token: token, Role: role}
+		result = &FinalizeResult{RestaurantID: r.ID.Hex(), Token: token, Role: role}
 		return nil, nil
 	})
 	if err != nil {

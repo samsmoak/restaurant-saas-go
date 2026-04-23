@@ -11,19 +11,23 @@ import (
 )
 
 const (
-	LocalRestaurantID   = "tenant_restaurant_id"   // primitive.ObjectID
-	LocalRestaurantSlug = "tenant_restaurant_slug" // string
+	LocalRestaurantID = "tenant_restaurant_id" // primitive.ObjectID
 )
 
-// ResolveTenantFromPath parses :slug from the URL and loads the restaurant.
-// Use on `/api/r/:slug/...` groups. Returns 404 if slug is unknown.
+// ResolveTenantFromPath parses :restaurant_id from the URL and loads the
+// restaurant. Use on `/api/r/:restaurant_id/...` groups. Returns 404 if the id
+// is unknown or malformed.
 func ResolveTenantFromPath(repo *restaurantRepoPkg.RestaurantRepository) fiber.Handler {
 	return func(c *fiber.Ctx) error {
-		slug := strings.TrimSpace(c.Params("slug"))
-		if slug == "" {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "restaurant slug is required"})
+		raw := strings.TrimSpace(c.Params("restaurant_id"))
+		if raw == "" {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "restaurant_id is required"})
 		}
-		r, err := repo.FindBySlug(c.UserContext(), slug)
+		oid, err := primitive.ObjectIDFromHex(raw)
+		if err != nil {
+			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid restaurant_id"})
+		}
+		r, err := repo.GetByID(c.UserContext(), oid)
 		if err != nil {
 			return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 		}
@@ -31,7 +35,6 @@ func ResolveTenantFromPath(repo *restaurantRepoPkg.RestaurantRepository) fiber.H
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "restaurant not found"})
 		}
 		c.Locals(LocalRestaurantID, r.ID)
-		c.Locals(LocalRestaurantSlug, r.Slug)
 		return c.Next()
 	}
 }
@@ -83,7 +86,6 @@ func ResolveTenantFromToken(repo *restaurantRepoPkg.RestaurantRepository) fiber.
 			return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "restaurant not found"})
 		}
 		c.Locals(LocalRestaurantID, r.ID)
-		c.Locals(LocalRestaurantSlug, r.Slug)
 		return c.Next()
 	}
 }
@@ -91,12 +93,6 @@ func ResolveTenantFromToken(repo *restaurantRepoPkg.RestaurantRepository) fiber.
 // TenantIDFromCtx fetches the resolved tenant id. Returns zero ObjectID if unset.
 func TenantIDFromCtx(c *fiber.Ctx) primitive.ObjectID {
 	v, _ := c.Locals(LocalRestaurantID).(primitive.ObjectID)
-	return v
-}
-
-// TenantSlugFromCtx fetches the slug.
-func TenantSlugFromCtx(c *fiber.Ctx) string {
-	v, _ := c.Locals(LocalRestaurantSlug).(string)
 	return v
 }
 
