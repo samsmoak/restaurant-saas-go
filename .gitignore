@@ -1,0 +1,25 @@
+.env
+.env.local
+*.env
+!.env.example
+
+# build outputs
+/tmp/
+/bin/
+/restaurantsaas
+/cmd/api/restaurantsaas
+
+# go
+/vendor/
+*.test
+*.out
+coverage.out
+
+# editor
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# spec doc (kept out of ship)
+restaurant-saas-go-prompt.txt

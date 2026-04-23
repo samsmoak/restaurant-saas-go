@@ -1,0 +1,64 @@
+# Google Cloud Build pipeline.
+# Triggers:  gcloud builds submit --config cloudbuild.yaml .
+
+substitutions:
+  _REGION: us-central1
+  _SERVICE: restaurant-saas-api
+  _AR_REPO: restaurant-saas
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+
+steps:
+  # Build the production image. The image path uses project/repo substitutions
+  # that resolve at build time.
+  - id: build
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMG="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}"
+        docker build \
+          --tag "$${IMG}:latest" \
+          --tag "$${IMG}:${BUILD_ID}" \
+          --file Dockerfile .
+
+  # Push both tags.
+  - id: push
+    name: gcr.io/cloud-builders/docker
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMG="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}"
+        docker push "$${IMG}:latest"
+        docker push "$${IMG}:${BUILD_ID}"
+
+  # Deploy to Cloud Run. Secrets are pulled from Secret Manager.
+  - id: deploy
+    name: gcr.io/google.com/cloudsdktool/cloud-sdk
+    entrypoint: bash
+    args:
+      - -c
+      - |
+        set -euo pipefail
+        IMG="${_REGION}-docker.pkg.dev/${PROJECT_ID}/${_AR_REPO}/${_SERVICE}:${BUILD_ID}"
+        gcloud run deploy "${_SERVICE}" \
+          --image="$${IMG}" \
+          --region="${_REGION}" \
+          --platform=managed \
+          --allow-unauthenticated \
+          --port=8080 \
+          --timeout=300 \
+          --cpu=1 \
+          --memory=512Mi \
+          --min-instances=0 \
+          --max-instances=10 \
+          --set-env-vars=MONGO_DB_NAME=restaurantsaas,AWS_S3_REGION=us-east-1,CORS_ALLOWED_ORIGINS=* \
+          --set-secrets=MONGO_URI=MONGO_URI:latest,JWT_SECRET=JWT_SECRET:latest,STRIPE_SECRET_KEY=STRIPE_SECRET_KEY:latest,STRIPE_WEBHOOK_SECRET=STRIPE_WEBHOOK_SECRET:latest,GOOGLE_OAUTH_CLIENT_ID=GOOGLE_OAUTH_CLIENT_ID:latest,AWS_S3_BUCKET=AWS_S3_BUCKET:latest,AWS_ACCESS_KEY_ID=AWS_ACCESS_KEY_ID:latest,AWS_SECRET_ACCESS_KEY=AWS_SECRET_ACCESS_KEY:latest,S3_PUBLIC_BASE_URL=S3_PUBLIC_BASE_URL:latest,ADMIN_LEGACY_INVITE_CODE=ADMIN_LEGACY_INVITE_CODE:latest,ADMIN_LEGACY_RESTAURANT_SLUG=ADMIN_LEGACY_RESTAURANT_SLUG:latest
+
+# No `images:` field — we tag/push manually inside the build step above
+# to avoid Cloud Build's strict pre-expansion validation on that field.

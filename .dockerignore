@@ -1,0 +1,12 @@
+.git
+.env
+.env.*
+!.env.example
+tmp/
+bin/
+*.md
+restaurant-saas-go-prompt.txt
+deploy/
+.vscode/
+.idea/
+.DS_Store
