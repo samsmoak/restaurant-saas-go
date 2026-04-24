@@ -46,6 +46,7 @@ type AuthService interface {
 	AdminFinalize(ctx context.Context, userID string, userEmail string, inviteCode string) (*FinalizeResult, error)
 	ActivateAdmin(ctx context.Context, userID, email, restaurantID string) (*AuthResponse, error)
 	ListMemberships(ctx context.Context, userID primitive.ObjectID) ([]Membership, error)
+	CheckEmailAvailable(ctx context.Context, email string) (*authModel.EmailAvailableResponse, error)
 }
 
 type FinalizeResult struct {
@@ -263,6 +264,26 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 		})
 	}
 	return out, nil
+}
+
+func (s *authService) CheckEmailAvailable(ctx context.Context, email string) (*authModel.EmailAvailableResponse, error) {
+	normalized := strings.ToLower(strings.TrimSpace(email))
+	user, err := s.userRepo.FindByEmail(ctx, normalized)
+	if err != nil {
+		return nil, fmt.Errorf("AuthService.CheckEmailAvailable: %w", err)
+	}
+	if user == nil {
+		return &authModel.EmailAvailableResponse{Available: true}, nil
+	}
+	rows, err := s.adminRepo.ListByUserID(ctx, user.ID)
+	if err != nil {
+		return nil, fmt.Errorf("AuthService.CheckEmailAvailable: %w", err)
+	}
+	registeredAs := "customer"
+	if len(rows) > 0 {
+		registeredAs = "admin"
+	}
+	return &authModel.EmailAvailableResponse{Available: false, RegisteredAs: registeredAs}, nil
 }
 
 func (s *authService) AdminFinalize(ctx context.Context, userID string, userEmail string, inviteCode string) (*FinalizeResult, error) {

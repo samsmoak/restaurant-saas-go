@@ -25,6 +25,7 @@ func (ctl *AuthController) RegisterRoutes(r fiber.Router, jwtAuth fiber.Handler)
 	r.Post("/login", ctl.Login)
 	r.Post("/google", ctl.Google)
 	r.Post("/signout", ctl.Signout)
+	r.Post("/email-available", ctl.EmailAvailable)
 	// Authenticated
 	r.Post("/admin/finalize", jwtAuth, ctl.AdminFinalize)
 	r.Post("/admin/activate", jwtAuth, ctl.ActivateAdmin)
@@ -44,6 +45,21 @@ func (ctl *AuthController) SignupCustomer(c *fiber.Ctx) error {
 		if errors.Is(err, authSvc.ErrEmailTaken) {
 			return c.Status(fiber.StatusConflict).JSON(fiber.Map{"error": "email already registered"})
 		}
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(resp)
+}
+
+func (ctl *AuthController) EmailAvailable(c *fiber.Ctx) error {
+	var req authModel.EmailAvailableRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+	}
+	if err := req.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	resp, err := ctl.svc.CheckEmailAvailable(c.UserContext(), req.Email)
+	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(resp)

@@ -55,6 +55,22 @@ func (r *GoogleAuthRequest) Validate() error {
 	return nil
 }
 
+type EmailAvailableRequest struct {
+	Email string `json:"email"`
+}
+
+func (r *EmailAvailableRequest) Validate() error {
+	if !IsEmail(r.Email) {
+		return errors.New("invalid email")
+	}
+	return nil
+}
+
+type EmailAvailableResponse struct {
+	Available    bool   `json:"available"`
+	RegisteredAs string `json:"registered_as,omitempty"`
+}
+
 type AdminFinalizeRequest struct {
 	InviteCode string `json:"invite_code"`
 }
