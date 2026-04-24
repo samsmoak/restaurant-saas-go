@@ -243,8 +243,23 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 	if len(rows) == 0 {
 		return []Membership{}, nil
 	}
-	ids := make([]primitive.ObjectID, 0, len(rows))
+	// The admin_users unique index on (user_id, restaurant_id) should make this
+	// unreachable, but collapse duplicates defensively so clients never see
+	// repeats. When the same restaurant appears twice, keep the highest role.
+	seen := make(map[primitive.ObjectID]int, len(rows))
+	unique := make([]*adminModel.AdminUser, 0, len(rows))
 	for _, row := range rows {
+		if idx, ok := seen[row.RestaurantID]; ok {
+			if adminRolePrecedence(row.Role) > adminRolePrecedence(unique[idx].Role) {
+				unique[idx] = row
+			}
+			continue
+		}
+		seen[row.RestaurantID] = len(unique)
+		unique = append(unique, row)
+	}
+	ids := make([]primitive.ObjectID, 0, len(unique))
+	for _, row := range unique {
 		ids = append(ids, row.RestaurantID)
 	}
 	restaurants, err := s.restRepo.FindMany(ctx, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}})
@@ -255,8 +270,8 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 	for _, r := range restaurants {
 		restMap[r.ID] = r.Name
 	}
-	out := make([]Membership, 0, len(rows))
-	for _, row := range rows {
+	out := make([]Membership, 0, len(unique))
+	for _, row := range unique {
 		out = append(out, Membership{
 			RestaurantID:   row.RestaurantID.Hex(),
 			RestaurantName: restMap[row.RestaurantID],
@@ -264,6 +279,17 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 		})
 	}
 	return out, nil
+}
+
+func adminRolePrecedence(role string) int {
+	switch role {
+	case adminModel.RoleOwner:
+		return 3
+	case adminModel.RoleAdmin:
+		return 2
+	default:
+		return 1
+	}
 }
 
 func (s *authService) CheckEmailAvailable(ctx context.Context, email string) (*authModel.EmailAvailableResponse, error) {

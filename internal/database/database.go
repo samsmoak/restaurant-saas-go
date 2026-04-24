@@ -7,6 +7,7 @@ import (
 	"os"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 )
@@ -31,6 +32,12 @@ func Connect(ctx context.Context) (*mongo.Client, *mongo.Database, error) {
 }
 
 func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
+	// Collapse any legacy duplicate admin_users rows before the unique index on
+	// (user_id, restaurant_id) is built — if dupes exist when CreateMany runs,
+	// Mongo refuses to build the index and the error is only logged below,
+	// leaving the constraint permanently absent in prod.
+	dedupeAdminUsers(ctx, db)
+
 	specs := map[string][]mongo.IndexModel{
 		"users": {
 			{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)},
@@ -85,6 +92,84 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 		log.Printf("database.EnsureIndexes: drop restaurants.slug_1: %v", err)
 	}
 	return nil
+}
+
+// dedupeAdminUsers collapses rows that share the same (user_id, restaurant_id)
+// pair. For each duplicate group it keeps the row with the highest role
+// precedence (owner > admin > staff) and deletes the rest. Errors are logged
+// and swallowed — dedupe is best-effort so a failure here does not block boot.
+func dedupeAdminUsers(ctx context.Context, db *mongo.Database) {
+	coll := db.Collection("admin_users")
+	pipeline := mongo.Pipeline{
+		bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{
+				{Key: "user_id", Value: "$user_id"},
+				{Key: "restaurant_id", Value: "$restaurant_id"},
+			}},
+			{Key: "rows", Value: bson.D{{Key: "$push", Value: bson.D{
+				{Key: "id", Value: "$_id"},
+				{Key: "role", Value: "$role"},
+			}}}},
+			{Key: "count", Value: bson.D{{Key: "$sum", Value: 1}}},
+		}}},
+		bson.D{{Key: "$match", Value: bson.D{{Key: "count", Value: bson.D{{Key: "$gt", Value: 1}}}}}},
+	}
+	cur, err := coll.Aggregate(ctx, pipeline)
+	if err != nil {
+		log.Printf("database.EnsureIndexes: admin_users dedupe aggregate: %v", err)
+		return
+	}
+	defer cur.Close(ctx)
+
+	var removed int64
+	for cur.Next(ctx) {
+		var group struct {
+			Rows []struct {
+				ID   primitive.ObjectID `bson:"id"`
+				Role string             `bson:"role"`
+			} `bson:"rows"`
+		}
+		if err := cur.Decode(&group); err != nil {
+			log.Printf("database.EnsureIndexes: admin_users dedupe decode: %v", err)
+			continue
+		}
+		if len(group.Rows) < 2 {
+			continue
+		}
+		keep := 0
+		for i := 1; i < len(group.Rows); i++ {
+			if adminRolePrec(group.Rows[i].Role) > adminRolePrec(group.Rows[keep].Role) {
+				keep = i
+			}
+		}
+		toDelete := make([]primitive.ObjectID, 0, len(group.Rows)-1)
+		for i, r := range group.Rows {
+			if i == keep {
+				continue
+			}
+			toDelete = append(toDelete, r.ID)
+		}
+		res, err := coll.DeleteMany(ctx, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: toDelete}}}})
+		if err != nil {
+			log.Printf("database.EnsureIndexes: admin_users dedupe delete: %v", err)
+			continue
+		}
+		removed += res.DeletedCount
+	}
+	if removed > 0 {
+		log.Printf("database.EnsureIndexes: removed %d duplicate admin_users rows", removed)
+	}
+}
+
+func adminRolePrec(role string) int {
+	switch role {
+	case "owner":
+		return 3
+	case "admin":
+		return 2
+	default:
+		return 1
+	}
 }
 
 // dropLegacyIndex removes an index by name if it exists; ignores "not found"
