@@ -38,6 +38,11 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 	// leaving the constraint permanently absent in prod.
 	dedupeAdminUsers(ctx, db)
 
+	// Drop admin_users rows whose restaurant no longer exists. Restaurants
+	// today are deleted directly in the DB with no cascade, so their
+	// membership rows otherwise leak into /api/auth/memberships as orphans.
+	pruneOrphanAdminUsers(ctx, db)
+
 	specs := map[string][]mongo.IndexModel{
 		"users": {
 			{Keys: bson.D{{Key: "email", Value: 1}}, Options: options.Index().SetUnique(true)},
@@ -158,6 +163,74 @@ func dedupeAdminUsers(ctx context.Context, db *mongo.Database) {
 	}
 	if removed > 0 {
 		log.Printf("database.EnsureIndexes: removed %d duplicate admin_users rows", removed)
+	}
+}
+
+// pruneOrphanAdminUsers deletes admin_users rows whose restaurant_id no longer
+// exists in the restaurants collection. Best-effort; errors are logged.
+func pruneOrphanAdminUsers(ctx context.Context, db *mongo.Database) {
+	adminColl := db.Collection("admin_users")
+	restColl := db.Collection("restaurants")
+
+	rawIDs, err := adminColl.Distinct(ctx, "restaurant_id", bson.D{})
+	if err != nil {
+		log.Printf("database.EnsureIndexes: admin_users orphan scan: %v", err)
+		return
+	}
+	if len(rawIDs) == 0 {
+		return
+	}
+	refIDs := make([]primitive.ObjectID, 0, len(rawIDs))
+	for _, v := range rawIDs {
+		if oid, ok := v.(primitive.ObjectID); ok {
+			refIDs = append(refIDs, oid)
+		}
+	}
+	if len(refIDs) == 0 {
+		return
+	}
+
+	cur, err := restColl.Find(ctx,
+		bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: refIDs}}}},
+		options.Find().SetProjection(bson.D{{Key: "_id", Value: 1}}),
+	)
+	if err != nil {
+		log.Printf("database.EnsureIndexes: restaurants existence scan: %v", err)
+		return
+	}
+	defer cur.Close(ctx)
+
+	existing := make(map[primitive.ObjectID]struct{}, len(refIDs))
+	for cur.Next(ctx) {
+		var doc struct {
+			ID primitive.ObjectID `bson:"_id"`
+		}
+		if err := cur.Decode(&doc); err != nil {
+			log.Printf("database.EnsureIndexes: restaurants scan decode: %v", err)
+			continue
+		}
+		existing[doc.ID] = struct{}{}
+	}
+
+	orphans := make([]primitive.ObjectID, 0)
+	for _, id := range refIDs {
+		if _, ok := existing[id]; !ok {
+			orphans = append(orphans, id)
+		}
+	}
+	if len(orphans) == 0 {
+		return
+	}
+
+	res, err := adminColl.DeleteMany(ctx,
+		bson.D{{Key: "restaurant_id", Value: bson.D{{Key: "$in", Value: orphans}}}},
+	)
+	if err != nil {
+		log.Printf("database.EnsureIndexes: admin_users orphan delete: %v", err)
+		return
+	}
+	if res.DeletedCount > 0 {
+		log.Printf("database.EnsureIndexes: removed %d orphan admin_users rows (referenced %d missing restaurants)", res.DeletedCount, len(orphans))
 	}
 }
 

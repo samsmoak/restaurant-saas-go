@@ -272,9 +272,15 @@ func (s *authService) ListMemberships(ctx context.Context, userID primitive.Obje
 	}
 	out := make([]Membership, 0, len(unique))
 	for _, row := range unique {
+		name, ok := restMap[row.RestaurantID]
+		if !ok {
+			// Orphan: the restaurant was deleted but the admin_users row
+			// was not. Skip it so clients never see phantom memberships.
+			continue
+		}
 		out = append(out, Membership{
 			RestaurantID:   row.RestaurantID.Hex(),
-			RestaurantName: restMap[row.RestaurantID],
+			RestaurantName: name,
 			Role:           row.Role,
 		})
 	}
