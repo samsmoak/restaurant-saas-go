@@ -11,11 +11,12 @@ const (
 	OrderStatusPreparing = "preparing"
 	OrderStatusReady     = "ready"
 	OrderStatusCompleted = "completed"
+	OrderStatusDelivered = "delivered"
 	OrderStatusCancelled = "cancelled"
 )
 
 var OrderStatusFlow = []string{
-	OrderStatusNew, OrderStatusPreparing, OrderStatusReady, OrderStatusCompleted,
+	OrderStatusNew, OrderStatusPreparing, OrderStatusReady, OrderStatusCompleted, OrderStatusDelivered,
 }
 
 var NextStatus = map[string]string{
@@ -24,15 +25,27 @@ var NextStatus = map[string]string{
 	OrderStatusReady:     OrderStatusCompleted,
 }
 
+var NextStatusDelivery = map[string]string{
+	OrderStatusNew:       OrderStatusPreparing,
+	OrderStatusPreparing: OrderStatusReady,
+	OrderStatusReady:     OrderStatusDelivered,
+}
+
 var NextStatusAction = map[string]string{
 	OrderStatusNew:       "Start Preparing",
 	OrderStatusPreparing: "Mark as Ready",
 	OrderStatusReady:     "Complete Order",
 }
 
+var NextStatusActionDelivery = map[string]string{
+	OrderStatusNew:       "Start Preparing",
+	OrderStatusPreparing: "Mark as Ready",
+	OrderStatusReady:     "Mark as Delivered",
+}
+
 func IsValidStatus(s string) bool {
 	switch s {
-	case OrderStatusNew, OrderStatusPreparing, OrderStatusReady, OrderStatusCompleted, OrderStatusCancelled:
+	case OrderStatusNew, OrderStatusPreparing, OrderStatusReady, OrderStatusCompleted, OrderStatusDelivered, OrderStatusCancelled:
 		return true
 	}
 	return false
