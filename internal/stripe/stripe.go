@@ -30,3 +30,14 @@ func ConstructEvent(rawBody []byte, signature string) (stripe.Event, error) {
 	}
 	return webhook.ConstructEvent(rawBody, signature, secret)
 }
+
+func ConstructBillingEvent(rawBody []byte, signature string) (stripe.Event, error) {
+	secret := os.Getenv("STRIPE_BILLING_WEBHOOK_SECRET")
+	if secret == "" {
+		secret = os.Getenv("STRIPE_WEBHOOK_SECRET")
+	}
+	if secret == "" {
+		return stripe.Event{}, fmt.Errorf("STRIPE_BILLING_WEBHOOK_SECRET not configured")
+	}
+	return webhook.ConstructEvent(rawBody, signature, secret)
+}

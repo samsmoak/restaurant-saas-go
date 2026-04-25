@@ -15,6 +15,9 @@ import (
 	adminRepoPkg "restaurantsaas/internal/apps/admin/repository"
 	adminSvcPkg "restaurantsaas/internal/apps/admin/service"
 	authCtrl "restaurantsaas/internal/apps/auth/controller"
+	billingCtrl "restaurantsaas/internal/apps/billing/controller"
+	billingRepoPkg "restaurantsaas/internal/apps/billing/repository"
+	billingSvcPkg "restaurantsaas/internal/apps/billing/service"
 	authSvcPkg "restaurantsaas/internal/apps/auth/service"
 	categoryCtrl "restaurantsaas/internal/apps/category/controller"
 	categoryRepoPkg "restaurantsaas/internal/apps/category/repository"
@@ -87,6 +90,8 @@ func RegisterRoutes(srv *FiberServer) {
 	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub)
 	paymentService := paymentSvcPkg.NewPaymentService(orderService, profileRepo)
 	uploadService := uploadSvcPkg.NewUploadService()
+	billingRepo := billingRepoPkg.NewBillingRepository(srv.DB)
+	billingService := billingSvcPkg.NewBillingService(billingRepo, restRepo)
 
 	// Controllers
 	authController := authCtrl.New(authService)
@@ -99,6 +104,7 @@ func RegisterRoutes(srv *FiberServer) {
 	orderController := orderCtrl.New(orderService)
 	paymentController := paymentCtrl.New(orderService, paymentService)
 	uploadController := uploadCtrl.New(uploadService)
+	billingController := billingCtrl.New(billingService)
 
 	api := srv.App.Group("/api")
 
@@ -117,6 +123,7 @@ func RegisterRoutes(srv *FiberServer) {
 
 	// Stripe webhook (no auth, raw body)
 	api.Post("/stripe/webhook", paymentController.Webhook)
+	api.Post("/billing/webhook", billingController.Webhook)
 
 	// Per-tenant public + customer endpoints under /api/r/:restaurant_id/*
 	tenantResolver := middleware.ResolveTenantFromPath(restRepo)
@@ -146,6 +153,7 @@ func RegisterRoutes(srv *FiberServer) {
 	inviteController.RegisterAdminRoutes(admin.Group("/invites"))
 	adminController.RegisterAdminRoutes(admin.Group("/users"))
 	uploadController.RegisterRoutes(admin.Group("/uploads"))
+	billingController.RegisterRoutes(admin.Group("/billing"))
 
 	// WebSocket
 	RegisterWSRoutes(srv, restRepo, adminRepo)
