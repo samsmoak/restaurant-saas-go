@@ -18,6 +18,9 @@ import (
 	billingCtrl "restaurantsaas/internal/apps/billing/controller"
 	billingRepoPkg "restaurantsaas/internal/apps/billing/repository"
 	billingSvcPkg "restaurantsaas/internal/apps/billing/service"
+	leadsCtrl "restaurantsaas/internal/apps/leads/controller"
+	leadsRepoPkg "restaurantsaas/internal/apps/leads/repository"
+	leadsSvcPkg "restaurantsaas/internal/apps/leads/service"
 	authSvcPkg "restaurantsaas/internal/apps/auth/service"
 	categoryCtrl "restaurantsaas/internal/apps/category/controller"
 	categoryRepoPkg "restaurantsaas/internal/apps/category/repository"
@@ -92,6 +95,9 @@ func RegisterRoutes(srv *FiberServer) {
 	uploadService := uploadSvcPkg.NewUploadService()
 	billingRepo := billingRepoPkg.NewBillingRepository(srv.DB)
 	billingService := billingSvcPkg.NewBillingService(billingRepo, restRepo)
+	leadsRepo := leadsRepoPkg.NewLeadsRepository(srv.DB)
+	leadsService := leadsSvcPkg.NewLeadsService(leadsRepo)
+	leadsController := leadsCtrl.New(leadsService)
 
 	// Controllers
 	authController := authCtrl.New(authService)
@@ -120,6 +126,9 @@ func RegisterRoutes(srv *FiberServer) {
 	userController.RegisterMeRoutes(me)
 	orderController.RegisterMeRoutes(me)
 	paymentController.RegisterMeRoutes(me)
+
+	// Public leads endpoint (no auth)
+	leadsController.RegisterRoutes(api)
 
 	// Stripe webhook (no auth, raw body)
 	api.Post("/stripe/webhook", paymentController.Webhook)

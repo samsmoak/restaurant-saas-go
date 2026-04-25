@@ -89,6 +89,10 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "stripe_customer_id", Value: 1}}},
 			{Keys: bson.D{{Key: "subscription_id", Value: 1}}},
 		},
+		"leads": {
+			{Keys: bson.D{{Key: "email", Value: 1}}},
+			{Keys: bson.D{{Key: "submitted_at", Value: -1}}},
+		},
 	}
 	for coll, models := range specs {
 		if _, err := db.Collection(coll).Indexes().CreateMany(ctx, models); err != nil {
