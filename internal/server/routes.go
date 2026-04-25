@@ -61,6 +61,11 @@ func RegisterRoutes(srv *FiberServer) {
 	srv.App.Get("/", healthHandler(srv))
 	srv.App.Get("/health", healthHandler(srv))
 
+	// Apple Pay domain verification — served at the path Stripe/Apple requires.
+	srv.App.Get("/.well-known/apple-developer-merchantid-domain-association", func(c *fiber.Ctx) error {
+		return c.SendFile("./static/.well-known/apple-developer-merchantid-domain-association")
+	})
+
 	// Repositories
 	userRepo := userRepoPkg.NewUserRepository(srv.DB)
 	profileRepo := userRepoPkg.NewCustomerProfileRepository(srv.DB)
@@ -80,7 +85,7 @@ func RegisterRoutes(srv *FiberServer) {
 	categoryService := categorySvcPkg.NewCategoryService(catRepo)
 	menuService := menuSvcPkg.NewMenuService(menuRepo, catRepo)
 	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub)
-	paymentService := paymentSvcPkg.NewPaymentService(orderService)
+	paymentService := paymentSvcPkg.NewPaymentService(orderService, profileRepo)
 	uploadService := uploadSvcPkg.NewUploadService()
 
 	// Controllers
@@ -108,6 +113,7 @@ func RegisterRoutes(srv *FiberServer) {
 	me := api.Group("/me", middleware.JWTAuth())
 	userController.RegisterMeRoutes(me)
 	orderController.RegisterMeRoutes(me)
+	paymentController.RegisterMeRoutes(me)
 
 	// Stripe webhook (no auth, raw body)
 	api.Post("/stripe/webhook", paymentController.Webhook)
