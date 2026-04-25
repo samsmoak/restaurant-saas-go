@@ -18,12 +18,23 @@ type User struct {
 	UpdatedAt     time.Time          `bson:"updated_at" json:"updated_at"`
 }
 
+type SavedAddress struct {
+	ID      primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	Label   string             `bson:"label" json:"label"`
+	Address string             `bson:"address" json:"address"`
+	City    string             `bson:"city" json:"city"`
+	State   string             `bson:"state" json:"state"`
+	Zip     string             `bson:"zip" json:"zip"`
+}
+
 type CustomerProfile struct {
-	ID             primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	UserID         primitive.ObjectID `bson:"user_id" json:"user_id"`
-	Email          string             `bson:"email" json:"email"`
-	FullName       string             `bson:"full_name" json:"full_name"`
-	Phone          string             `bson:"phone" json:"phone"`
-	DefaultAddress string             `bson:"default_address" json:"default_address"`
-	CreatedAt      time.Time          `bson:"created_at" json:"created_at"`
+	ID               primitive.ObjectID `bson:"_id,omitempty" json:"id"`
+	UserID           primitive.ObjectID `bson:"user_id" json:"user_id"`
+	Email            string             `bson:"email" json:"email"`
+	FullName         string             `bson:"full_name" json:"full_name"`
+	Phone            string             `bson:"phone" json:"phone"`
+	DefaultAddress   string             `bson:"default_address" json:"default_address"`
+	Addresses        []SavedAddress     `bson:"addresses,omitempty" json:"addresses,omitempty"`
+	StripeCustomerID string             `bson:"stripe_customer_id,omitempty" json:"-"`
+	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`
 }

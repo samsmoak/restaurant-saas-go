@@ -59,6 +59,36 @@ func (r *CustomerProfileRepository) FindByUserID(ctx context.Context, uid primit
 	return r.FindOne(ctx, bson.D{{Key: "user_id", Value: uid}})
 }
 
+func (r *CustomerProfileRepository) SetStripeCustomerID(ctx context.Context, uid primitive.ObjectID, stripeID string) error {
+	_, err := r.UpdateForUser(ctx, uid, bson.D{{Key: "stripe_customer_id", Value: stripeID}})
+	return err
+}
+
+func (r *CustomerProfileRepository) ListAddresses(ctx context.Context, uid primitive.ObjectID) ([]model.SavedAddress, error) {
+	p, err := r.FindByUserID(ctx, uid)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil || len(p.Addresses) == 0 {
+		return []model.SavedAddress{}, nil
+	}
+	return p.Addresses, nil
+}
+
+func (r *CustomerProfileRepository) AddAddress(ctx context.Context, uid primitive.ObjectID, addr model.SavedAddress) (*model.CustomerProfile, error) {
+	return r.FindOneAndUpdate(ctx,
+		bson.D{{Key: "user_id", Value: uid}},
+		bson.D{{Key: "$push", Value: bson.D{{Key: "addresses", Value: addr}}}},
+	)
+}
+
+func (r *CustomerProfileRepository) RemoveAddress(ctx context.Context, uid, addrID primitive.ObjectID) (*model.CustomerProfile, error) {
+	return r.FindOneAndUpdate(ctx,
+		bson.D{{Key: "user_id", Value: uid}},
+		bson.D{{Key: "$pull", Value: bson.D{{Key: "addresses", Value: bson.D{{Key: "_id", Value: addrID}}}}}},
+	)
+}
+
 func (r *CustomerProfileRepository) UpdateForUser(ctx context.Context, uid primitive.ObjectID, set bson.D) (*model.CustomerProfile, error) {
 	return r.FindOneAndUpdate(ctx,
 		bson.D{{Key: "user_id", Value: uid}},
