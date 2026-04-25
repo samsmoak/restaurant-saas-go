@@ -40,8 +40,9 @@ set_secret() {
 echo "==> setting secrets (leave blank to skip one)"
 set_secret MONGO_URI                "MongoDB Atlas SRV URI"
 set_secret JWT_SECRET                "JWT signing secret (hex, 64+ chars)"
-set_secret STRIPE_SECRET_KEY         "Stripe secret key (sk_…)"
-set_secret STRIPE_WEBHOOK_SECRET     "Stripe webhook secret (whsec_…)"
+set_secret STRIPE_SECRET_KEY              "Stripe secret key (sk_…)"
+set_secret STRIPE_WEBHOOK_SECRET          "Stripe order webhook secret (whsec_…)"
+set_secret STRIPE_BILLING_WEBHOOK_SECRET  "Stripe billing webhook secret (whsec_…)"
 set_secret GOOGLE_OAUTH_CLIENT_ID    "Google OAuth web client ID" no
 set_secret AWS_S3_BUCKET             "S3 bucket name" no
 set_secret AWS_ACCESS_KEY_ID         "AWS access key id"
