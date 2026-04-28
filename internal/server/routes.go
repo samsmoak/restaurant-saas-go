@@ -14,10 +14,22 @@ import (
 	adminCtrl "restaurantsaas/internal/apps/admin/controller"
 	adminRepoPkg "restaurantsaas/internal/apps/admin/repository"
 	adminSvcPkg "restaurantsaas/internal/apps/admin/service"
+	aiClient "restaurantsaas/internal/apps/ai/client"
+	aiCtrl "restaurantsaas/internal/apps/ai/controller"
+	aiSvcPkg "restaurantsaas/internal/apps/ai/service"
 	authCtrl "restaurantsaas/internal/apps/auth/controller"
 	billingCtrl "restaurantsaas/internal/apps/billing/controller"
 	billingRepoPkg "restaurantsaas/internal/apps/billing/repository"
 	billingSvcPkg "restaurantsaas/internal/apps/billing/service"
+	discoveryCtrl "restaurantsaas/internal/apps/discovery/controller"
+	discoveryRepoPkg "restaurantsaas/internal/apps/discovery/repository"
+	discoverySvcPkg "restaurantsaas/internal/apps/discovery/service"
+	favoriteCtrl "restaurantsaas/internal/apps/favorites/controller"
+	favoriteRepoPkg "restaurantsaas/internal/apps/favorites/repository"
+	favoriteSvcPkg "restaurantsaas/internal/apps/favorites/service"
+	reviewCtrl "restaurantsaas/internal/apps/reviews/controller"
+	reviewRepoPkg "restaurantsaas/internal/apps/reviews/repository"
+	reviewSvcPkg "restaurantsaas/internal/apps/reviews/service"
 	leadsCtrl "restaurantsaas/internal/apps/leads/controller"
 	leadsRepoPkg "restaurantsaas/internal/apps/leads/repository"
 	leadsSvcPkg "restaurantsaas/internal/apps/leads/service"
@@ -82,6 +94,11 @@ func RegisterRoutes(srv *FiberServer) {
 	orderRepo := orderRepoPkg.NewOrderRepository(srv.DB)
 	restRepo := restaurantRepoPkg.NewRestaurantRepository(srv.DB)
 
+	// Repositories (continued)
+	favoriteRepo := favoriteRepoPkg.NewFavoriteRepository(srv.DB)
+	reviewRepo := reviewRepoPkg.NewReviewRepository(srv.DB)
+	discoveryRepo := discoveryRepoPkg.NewDiscoveryRepository(srv.DB)
+
 	// Services
 	restService := restaurantSvcPkg.NewRestaurantService(restRepo, adminRepo)
 	authService := authSvcPkg.NewAuthService(srv.MongoClient, userRepo, profileRepo, adminRepo, inviteRepo, restRepo)
@@ -90,14 +107,27 @@ func RegisterRoutes(srv *FiberServer) {
 	inviteService := inviteSvcPkg.NewInviteService(inviteRepo, restRepo)
 	categoryService := categorySvcPkg.NewCategoryService(catRepo)
 	menuService := menuSvcPkg.NewMenuService(menuRepo, catRepo)
-	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub)
-	paymentService := paymentSvcPkg.NewPaymentService(orderService, profileRepo)
-	uploadService := uploadSvcPkg.NewUploadService()
+	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub, restService)
 	billingRepo := billingRepoPkg.NewBillingRepository(srv.DB)
 	billingService := billingSvcPkg.NewBillingService(billingRepo, restRepo)
+	paymentService := paymentSvcPkg.NewPaymentService(orderService, profileRepo, billingService)
+	uploadService := uploadSvcPkg.NewUploadService()
 	leadsRepo := leadsRepoPkg.NewLeadsRepository(srv.DB)
 	leadsService := leadsSvcPkg.NewLeadsService(leadsRepo)
 	leadsController := leadsCtrl.New(leadsService)
+	discoveryService := discoverySvcPkg.NewDiscoveryService(discoveryRepo)
+	favoriteService := favoriteSvcPkg.NewFavoriteService(favoriteRepo, restRepo)
+	reviewService := reviewSvcPkg.NewReviewService(reviewRepo, orderRepo, restService)
+
+	// LLM client is optional. FromEnv returns nil when LLM_API_KEY is unset
+	// — the AI service handles nil by falling back to rule-based intent
+	// parsing for /search and a deterministic reply for /chat.
+	llm, err := aiClient.FromEnv()
+	if err != nil {
+		log.Printf("restaurantsaas: LLM client init: %v (AI endpoints will use fallback)", err)
+		llm = nil
+	}
+	aiService := aiSvcPkg.NewAIService(llm, discoveryService)
 
 	// Controllers
 	authController := authCtrl.New(authService)
@@ -111,6 +141,10 @@ func RegisterRoutes(srv *FiberServer) {
 	paymentController := paymentCtrl.New(orderService, paymentService)
 	uploadController := uploadCtrl.New(uploadService)
 	billingController := billingCtrl.New(billingService)
+	discoveryController := discoveryCtrl.New(discoveryService)
+	favoriteController := favoriteCtrl.New(favoriteService)
+	reviewController := reviewCtrl.New(reviewService)
+	aiController := aiCtrl.New(aiService)
 
 	api := srv.App.Group("/api")
 
@@ -118,7 +152,11 @@ func RegisterRoutes(srv *FiberServer) {
 	authController.RegisterRoutes(api.Group("/auth"), middleware.JWTAuth())
 
 	// Global restaurant endpoints: create, lookup, list-mine.
+	// Discovery routes go on the same group so they share OptionalJWTAuth.
+	// They MUST be registered before restController.RegisterTopLevelRoutes
+	// so static paths (/, /search, /search/suggest) win over /:restaurant_id.
 	restGroup := api.Group("/restaurants", middleware.OptionalJWTAuth())
+	discoveryController.RegisterRoutes(restGroup)
 	restController.RegisterTopLevelRoutes(restGroup)
 
 	// Customer: /api/me/* (JWT, not tenant-scoped).
@@ -126,6 +164,15 @@ func RegisterRoutes(srv *FiberServer) {
 	userController.RegisterMeRoutes(me)
 	orderController.RegisterMeRoutes(me)
 	paymentController.RegisterMeRoutes(me)
+	favoriteController.RegisterMeRoutes(me)
+	reviewController.RegisterMeRoutes(me)
+	uploadController.RegisterMeRoutes(me)
+
+	// AI: /api/ai/* — /search is public (signed-in caller is optional and
+	// only used to bias geo); /chat requires JWT per spec.
+	aiPublic := api.Group("/ai", middleware.OptionalJWTAuth())
+	aiPublic.Post("/search", aiController.Search)
+	api.Post("/ai/chat", middleware.JWTAuth(), aiController.Chat)
 
 	// Public leads endpoint (no auth)
 	leadsController.RegisterRoutes(api)
@@ -140,6 +187,7 @@ func RegisterRoutes(srv *FiberServer) {
 	menuController.RegisterPublicRoutes(tenant.Group("/menu"))
 	restController.RegisterPublicRoutes(tenant.Group("/restaurant"))
 	orderController.RegisterPublicRoutes(tenant.Group("/orders"))
+	reviewController.RegisterTenantRoutes(tenant.Group("/reviews"))
 
 	// Checkout requires JWT + customer profile, still tenant-scoped by path.
 	checkout := tenant.Group("/checkout",

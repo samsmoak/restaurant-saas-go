@@ -13,9 +13,10 @@ import (
 )
 
 type ProfileUpdateRequest struct {
-	FullName       string `json:"full_name"`
-	Phone          string `json:"phone"`
-	DefaultAddress string `json:"default_address"`
+	FullName       string  `json:"full_name"`
+	Phone          string  `json:"phone"`
+	DefaultAddress string  `json:"default_address"`
+	PhotoURL       *string `json:"photo_url"`
 }
 
 func (r *ProfileUpdateRequest) Validate() error {
@@ -82,6 +83,10 @@ func (s *userService) UpdateProfile(ctx context.Context, userID string, req *Pro
 		{Key: "full_name", Value: strings.TrimSpace(req.FullName)},
 		{Key: "phone", Value: strings.TrimSpace(req.Phone)},
 		{Key: "default_address", Value: strings.TrimSpace(req.DefaultAddress)},
+	}
+	// PhotoURL is opt-in: nil means "don't touch", "" means "clear it".
+	if req.PhotoURL != nil {
+		set = append(set, bson.E{Key: "photo_url", Value: strings.TrimSpace(*req.PhotoURL)})
 	}
 	return s.profileRepo.UpdateForUser(ctx, oid, set)
 }

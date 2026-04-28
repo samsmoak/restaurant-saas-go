@@ -12,6 +12,17 @@ type OpeningHoursDay struct {
 	Closed bool   `bson:"closed" json:"closed"`
 }
 
+// GeoJSONPoint is the Mongo 2dsphere-compatible point shape.
+// Coordinates are [longitude, latitude] order — Mongo's requirement.
+type GeoJSONPoint struct {
+	Type        string     `bson:"type" json:"type"`
+	Coordinates [2]float64 `bson:"coordinates" json:"coordinates"`
+}
+
+func NewGeoJSONPoint(lng, lat float64) *GeoJSONPoint {
+	return &GeoJSONPoint{Type: "Point", Coordinates: [2]float64{lng, lat}}
+}
+
 // Onboarding step keys used by the admin wizard. The restaurant record keeps
 // an append-only set of completed steps so the UI can resume from where the
 // user left off.
@@ -49,9 +60,19 @@ type Restaurant struct {
 
 	OnboardingCompletedSteps []string                   `bson:"onboarding_completed_steps" json:"onboarding_completed_steps"`
 
-	StripeAccountID          string                     `bson:"stripe_account_id,omitempty" json:"-"`
-	CreatedAt                time.Time                  `bson:"created_at" json:"created_at"`
-	UpdatedAt                time.Time                  `bson:"updated_at" json:"updated_at"`
+	// Discovery / ranking inputs.
+	CuisineTags        []string      `bson:"cuisine_tags,omitempty" json:"cuisine_tags,omitempty"`
+	Location           *GeoJSONPoint `bson:"location,omitempty" json:"location,omitempty"`
+	AverageRating      float64       `bson:"average_rating" json:"average_rating"`
+	RatingCount        int           `bson:"rating_count" json:"rating_count"`
+	CompletionRate     float64       `bson:"completion_rate" json:"completion_rate"`
+	AveragePrepMinutes int           `bson:"average_prep_minutes" json:"average_prep_minutes"`
+	// PriceBand is algorithm-only; never surfaced to the customer per product spec.
+	PriceBand int `bson:"price_band" json:"-"`
+
+	StripeAccountID string    `bson:"stripe_account_id,omitempty" json:"-"`
+	CreatedAt       time.Time `bson:"created_at" json:"created_at"`
+	UpdatedAt       time.Time `bson:"updated_at" json:"updated_at"`
 }
 
 // PublicView is what customers (anonymous) see.
@@ -72,6 +93,11 @@ type PublicView struct {
 	Currency              string                     `json:"currency"`
 	OpeningHours          map[string]OpeningHoursDay `json:"opening_hours"`
 	ManualClosed          bool                       `json:"manual_closed"`
+
+	CuisineTags        []string `json:"cuisine_tags,omitempty"`
+	AverageRating      float64  `json:"average_rating"`
+	RatingCount        int      `json:"rating_count"`
+	AveragePrepMinutes int      `json:"average_prep_minutes,omitempty"`
 }
 
 func (r *Restaurant) PublicView() *PublicView {
@@ -92,6 +118,10 @@ func (r *Restaurant) PublicView() *PublicView {
 		Currency:              r.Currency,
 		OpeningHours:          r.OpeningHours,
 		ManualClosed:          r.ManualClosed,
+		CuisineTags:           r.CuisineTags,
+		AverageRating:         r.AverageRating,
+		RatingCount:           r.RatingCount,
+		AveragePrepMinutes:    r.AveragePrepMinutes,
 	}
 }
 
@@ -120,8 +150,16 @@ func NewRestaurant(name string, ownerID primitive.ObjectID) *Restaurant {
 		OpeningHours:             DefaultOpeningHours(),
 		ManualClosed:             false,
 		OnboardingCompletedSteps: []string{StepRestaurant},
-		CreatedAt:                now,
-		UpdatedAt:                now,
+		CuisineTags:              []string{},
+		AverageRating:            0,
+		RatingCount:              0,
+		// New restaurants start with a perfect completion rate so they aren't
+		// penalised by the discovery ranker before they have any order history.
+		CompletionRate:     1.0,
+		AveragePrepMinutes: 20,
+		PriceBand:          2,
+		CreatedAt:          now,
+		UpdatedAt:          now,
 	}
 }
 

@@ -58,6 +58,23 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 		},
 		"restaurants": {
 			{Keys: bson.D{{Key: "owner_id", Value: 1}}},
+			{
+				Keys: bson.D{
+					{Key: "name", Value: "text"},
+					{Key: "description", Value: "text"},
+					{Key: "cuisine_tags", Value: "text"},
+				},
+				Options: options.Index().SetWeights(bson.D{
+					{Key: "name", Value: 10},
+					{Key: "cuisine_tags", Value: 5},
+					{Key: "description", Value: 1},
+				}).SetName("restaurants_text_idx"),
+			},
+			{
+				Keys:    bson.D{{Key: "location", Value: "2dsphere"}},
+				Options: options.Index().SetSparse(true),
+			},
+			{Keys: bson.D{{Key: "average_rating", Value: -1}}},
 		},
 		"admin_users": {
 			{
@@ -92,6 +109,28 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 		"leads": {
 			{Keys: bson.D{{Key: "email", Value: 1}}},
 			{Keys: bson.D{{Key: "submitted_at", Value: -1}}},
+		},
+		"favorites": {
+			{
+				Keys:    bson.D{{Key: "customer_id", Value: 1}, {Key: "restaurant_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "customer_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		"reviews": {
+			{
+				Keys:    bson.D{{Key: "order_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "restaurant_id", Value: 1}, {Key: "created_at", Value: -1}}},
+			{Keys: bson.D{{Key: "customer_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		"billing_usage": {
+			{
+				Keys:    bson.D{{Key: "restaurant_id", Value: 1}, {Key: "period_start", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "restaurant_id", Value: 1}, {Key: "period_start", Value: -1}}},
 		},
 	}
 	for coll, models := range specs {

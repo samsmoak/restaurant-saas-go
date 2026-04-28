@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log"
 	"math"
 	"math/rand"
 	"strings"
@@ -107,10 +108,11 @@ type orderService struct {
 	menuSvc menuSvc.MenuService
 	restSvc restaurantSvc.RestaurantService
 	hub     *realtime.Hub
+	metrics restaurantSvc.MetricsRecomputer
 }
 
-func NewOrderService(repo *repository.OrderRepository, menu menuSvc.MenuService, rest restaurantSvc.RestaurantService, hub *realtime.Hub) OrderService {
-	return &orderService{repo: repo, menuSvc: menu, restSvc: rest, hub: hub}
+func NewOrderService(repo *repository.OrderRepository, menu menuSvc.MenuService, rest restaurantSvc.RestaurantService, hub *realtime.Hub, metrics restaurantSvc.MetricsRecomputer) OrderService {
+	return &orderService{repo: repo, menuSvc: menu, restSvc: rest, hub: hub, metrics: metrics}
 }
 
 func round2(f float64) float64 {
@@ -346,6 +348,15 @@ func (s *orderService) UpdateStatus(ctx context.Context, restaurantID primitive.
 		ev := realtime.NewEvent("order.updated", updated)
 		s.hub.BroadcastAdmin(updated.RestaurantID.Hex(), ev)
 		s.hub.BroadcastOrder(updated.OrderNumber, ev)
+	}
+	// Refresh ranking-input metrics when status transitions occur. Best-effort
+	// and run in the background so the API call returns immediately.
+	if updated != nil && s.metrics != nil && req.Status != nil {
+		go func(rid primitive.ObjectID) {
+			if err := s.metrics.RecomputeOperationalMetrics(context.Background(), rid); err != nil {
+				log.Printf("orderService.UpdateStatus: RecomputeOperationalMetrics: %v", err)
+			}
+		}(updated.RestaurantID)
 	}
 	return updated, nil
 }

@@ -21,6 +21,28 @@ func (ctl *UploadController) RegisterRoutes(r fiber.Router) {
 	r.Post("/direct", ctl.Direct)
 }
 
+// RegisterMeRoutes wires the customer-facing avatar upload route under
+// /api/me/uploads. The route enforces a 4MB cap and writes to the
+// customer-avatars/ prefix only.
+func (ctl *UploadController) RegisterMeRoutes(r fiber.Router) {
+	r.Post("/uploads/presign", ctl.CustomerPresign)
+}
+
+func (ctl *UploadController) CustomerPresign(c *fiber.Ctx) error {
+	var req uploadSvc.CustomerPresignRequest
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "invalid JSON body"})
+	}
+	if err := req.Validate(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	res, err := ctl.svc.PresignCustomerAvatar(c.UserContext(), &req)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(res)
+}
+
 func (ctl *UploadController) Presign(c *fiber.Ctx) error {
 	var req uploadSvc.PresignRequest
 	if err := c.BodyParser(&req); err != nil {

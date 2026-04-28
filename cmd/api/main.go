@@ -100,6 +100,13 @@ func logMissingEnv() {
 		"AWS_S3_BUCKET", "AWS_S3_REGION",
 		"AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY",
 		"REDIS_URL",
+		// AI is fully optional — when unset, /api/ai/search falls back to a
+		// rule-based intent parser and /api/ai/chat returns a fallback reply
+		// with HTTP 200 (per spec, never 5xx).
+		"LLM_API_KEY", "LLM_PROVIDER", "LLM_MODEL", "LLM_BASE_URL",
+		// Reserved for the future hybrid-retrieval path. Discovery uses
+		// Mongo only today.
+		"OPENSEARCH_URL", "OPENSEARCH_USERNAME", "OPENSEARCH_PASSWORD",
 	}
 	for _, k := range warn {
 		if os.Getenv(k) == "" {

@@ -34,6 +34,7 @@ type CustomerProfile struct {
 	FullName         string             `bson:"full_name" json:"full_name"`
 	Phone            string             `bson:"phone" json:"phone"`
 	DefaultAddress   string             `bson:"default_address" json:"default_address"`
+	PhotoURL         string             `bson:"photo_url,omitempty" json:"photo_url,omitempty"`
 	Addresses        []SavedAddress     `bson:"addresses,omitempty" json:"addresses,omitempty"`
 	StripeCustomerID string             `bson:"stripe_customer_id,omitempty" json:"-"`
 	CreatedAt        time.Time          `bson:"created_at" json:"created_at"`

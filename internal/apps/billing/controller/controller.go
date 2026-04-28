@@ -22,6 +22,8 @@ func (ctl *BillingController) RegisterRoutes(r fiber.Router) {
 	r.Post("/checkout/setup", ctl.CreateSetupCheckout)
 	r.Post("/checkout/subscription", ctl.CreateSubscriptionCheckout)
 	r.Post("/portal", ctl.CreatePortal)
+	r.Get("/usage", ctl.GetUsage)
+	r.Get("/tier", ctl.GetTier)
 }
 
 type returnURLBody struct {
@@ -100,6 +102,30 @@ func (ctl *BillingController) CreatePortal(c *fiber.Ctx) error {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	return c.JSON(fiber.Map{"url": url})
+}
+
+func (ctl *BillingController) GetUsage(c *fiber.Ctx) error {
+	rid := middleware.TenantIDFromCtx(c)
+	if rid.IsZero() {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "restaurant context missing"})
+	}
+	u, err := ctl.svc.GetUsage(c.UserContext(), rid)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(u)
+}
+
+func (ctl *BillingController) GetTier(c *fiber.Ctx) error {
+	rid := middleware.TenantIDFromCtx(c)
+	if rid.IsZero() {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": "restaurant context missing"})
+	}
+	t, err := ctl.svc.GetTier(c.UserContext(), rid)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(t)
 }
 
 func (ctl *BillingController) Webhook(c *fiber.Ctx) error {

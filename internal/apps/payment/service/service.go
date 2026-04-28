@@ -9,6 +9,7 @@ import (
 	"github.com/stripe/stripe-go/v76"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
+	billingSvcPkg "restaurantsaas/internal/apps/billing/service"
 	orderModel "restaurantsaas/internal/apps/order/model"
 	orderSvc "restaurantsaas/internal/apps/order/service"
 	userRepoPkg "restaurantsaas/internal/apps/user/repository"
@@ -43,10 +44,11 @@ type PaymentService interface {
 type paymentService struct {
 	orderSvc    orderSvc.OrderService
 	profileRepo *userRepoPkg.CustomerProfileRepository
+	billingSvc  billingSvcPkg.BillingService
 }
 
-func NewPaymentService(orders orderSvc.OrderService, profileRepo *userRepoPkg.CustomerProfileRepository) PaymentService {
-	return &paymentService{orderSvc: orders, profileRepo: profileRepo}
+func NewPaymentService(orders orderSvc.OrderService, profileRepo *userRepoPkg.CustomerProfileRepository, billingSvc billingSvcPkg.BillingService) PaymentService {
+	return &paymentService{orderSvc: orders, profileRepo: profileRepo, billingSvc: billingSvc}
 }
 
 func (s *paymentService) CreateIntentForOrder(ctx context.Context, result *orderSvc.CheckoutResult, opts *CreateIntentOptions) (string, string, error) {
@@ -98,8 +100,19 @@ func (s *paymentService) HandleWebhook(ctx context.Context, rawBody []byte, sign
 		if err := json.Unmarshal(event.Data.Raw, &pi); err != nil {
 			return fmt.Errorf("unmarshal payment_intent: %w", err)
 		}
-		if _, err := s.orderSvc.UpdatePaymentStatusByIntent(ctx, pi.ID, orderModel.PaymentStatusPaid); err != nil {
+		order, err := s.orderSvc.UpdatePaymentStatusByIntent(ctx, pi.ID, orderModel.PaymentStatusPaid)
+		if err != nil {
 			log.Printf("paymentService.HandleWebhook: update paid: %v", err)
+		}
+		if order != nil && s.billingSvc != nil {
+			// Fire-and-forget; the webhook should not 5xx if billing-usage
+			// tracking is unavailable. Use a fresh background context — the
+			// webhook context is short-lived.
+			go func(rid primitive.ObjectID) {
+				if err := s.billingSvc.RecordOrder(context.Background(), rid, billingSvcPkg.PerOrderFee); err != nil {
+					log.Printf("paymentService.HandleWebhook: RecordOrder: %v", err)
+				}
+			}(order.RestaurantID)
 		}
 	case "payment_intent.payment_failed":
 		var pi stripe.PaymentIntent

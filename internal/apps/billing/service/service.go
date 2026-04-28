@@ -24,12 +24,56 @@ var (
 	ErrNoCustomer       = errors.New("no stripe customer")
 )
 
+// PerOrderFee is the flat $0.99 transaction fee charged on each paid order.
+const PerOrderFee = 0.99
+
+// UsageView is the response shape for GET /api/admin/billing/usage.
+type UsageView struct {
+	PeriodStart      time.Time      `json:"period_start"`
+	PeriodEnd        time.Time      `json:"period_end"`
+	OrderCount       int            `json:"order_count"`
+	PerOrderFeeTotal float64        `json:"per_order_fee_total"`
+	Tier             int            `json:"tier"`
+	BasePrice        int            `json:"base_price"`
+	TierThresholds   TierThresholds `json:"tier_thresholds"`
+	ProjectedTotal   float64        `json:"projected_total"`
+	Currency         string         `json:"currency"`
+}
+
+// TierView is the response shape for GET /api/admin/billing/tier.
+type TierView struct {
+	CurrentTier     int  `json:"current_tier"`
+	BasePrice       int  `json:"base_price"`
+	IncludesOrders  int  `json:"includes_orders"`
+	NextTierAt      *int `json:"next_tier_at"`
+	OrderCount      int  `json:"order_count"`
+}
+
+type TierBand struct {
+	Min int  `json:"min"`
+	Max *int `json:"max"`
+}
+
+type TierThresholds struct {
+	Tier1 TierBand `json:"tier1"`
+	Tier2 TierBand `json:"tier2"`
+	Tier3 TierBand `json:"tier3"`
+}
+
 type BillingService interface {
 	GetStatus(ctx context.Context, restaurantID primitive.ObjectID) (*model.Billing, error)
 	CreateSetupCheckout(ctx context.Context, restaurantID primitive.ObjectID, returnURL string) (string, error)
 	CreateSubscriptionCheckout(ctx context.Context, restaurantID primitive.ObjectID, returnURL string) (string, error)
 	CreatePortal(ctx context.Context, restaurantID primitive.ObjectID, returnURL string) (string, error)
 	HandleWebhook(ctx context.Context, rawBody []byte, signature string) error
+
+	// RecordOrder is invoked from the Stripe payment_intent.succeeded
+	// webhook to track the per-order fee against the current period.
+	RecordOrder(ctx context.Context, restaurantID primitive.ObjectID, fee float64) error
+	// GetUsage returns the current month's order count + accumulated fee.
+	GetUsage(ctx context.Context, restaurantID primitive.ObjectID) (*UsageView, error)
+	// GetTier returns the restaurant's current pricing tier.
+	GetTier(ctx context.Context, restaurantID primitive.ObjectID) (*TierView, error)
 }
 
 type billingService struct {
@@ -265,4 +309,76 @@ func (s *billingService) HandleWebhook(ctx context.Context, rawBody []byte, sign
 		log.Printf("billingService.HandleWebhook: ignoring event %s", event.Type)
 	}
 	return nil
+}
+
+func (s *billingService) RecordOrder(ctx context.Context, restaurantID primitive.ObjectID, fee float64) error {
+	if err := s.repo.RecordUsageOrder(ctx, restaurantID, fee); err != nil {
+		return fmt.Errorf("RecordOrder: %w", err)
+	}
+	return nil
+}
+
+// tierFor returns (tier, basePriceUSD, includesOrders, nextTierAt) for a given count.
+func tierFor(count int) (int, int, int, *int) {
+	const tier1Max = 250
+	const tier2Max = 750
+	t2 := tier2Max + 1
+	if count <= tier1Max {
+		next := tier1Max + 1
+		return 1, 49, tier1Max, &next
+	}
+	if count <= tier2Max {
+		return 2, 99, tier2Max, &t2
+	}
+	return 3, 149, 0, nil
+}
+
+func defaultTierThresholds() TierThresholds {
+	t1Max := 250
+	t2Min := 251
+	t2Max := 750
+	t3Min := 751
+	return TierThresholds{
+		Tier1: TierBand{Min: 1, Max: &t1Max},
+		Tier2: TierBand{Min: t2Min, Max: &t2Max},
+		Tier3: TierBand{Min: t3Min, Max: nil},
+	}
+}
+
+func (s *billingService) GetUsage(ctx context.Context, restaurantID primitive.ObjectID) (*UsageView, error) {
+	u, err := s.repo.GetCurrentUsage(ctx, restaurantID)
+	if err != nil {
+		return nil, fmt.Errorf("GetUsage: %w", err)
+	}
+	tier, base, _, _ := tierFor(u.OrderCount)
+	currency := u.Currency
+	if currency == "" {
+		currency = "usd"
+	}
+	return &UsageView{
+		PeriodStart:      u.PeriodStart,
+		PeriodEnd:        u.PeriodEnd,
+		OrderCount:       u.OrderCount,
+		PerOrderFeeTotal: u.PerOrderFeeTotal,
+		Tier:             tier,
+		BasePrice:        base,
+		TierThresholds:   defaultTierThresholds(),
+		ProjectedTotal:   float64(base) + u.PerOrderFeeTotal,
+		Currency:         currency,
+	}, nil
+}
+
+func (s *billingService) GetTier(ctx context.Context, restaurantID primitive.ObjectID) (*TierView, error) {
+	u, err := s.repo.GetCurrentUsage(ctx, restaurantID)
+	if err != nil {
+		return nil, fmt.Errorf("GetTier: %w", err)
+	}
+	tier, base, includes, next := tierFor(u.OrderCount)
+	return &TierView{
+		CurrentTier:    tier,
+		BasePrice:      base,
+		IncludesOrders: includes,
+		NextTierAt:     next,
+		OrderCount:     u.OrderCount,
+	}, nil
 }

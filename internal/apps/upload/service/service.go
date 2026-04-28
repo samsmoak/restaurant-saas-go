@@ -10,9 +10,11 @@ import (
 )
 
 const (
-	UploadPrefixLogos      = "logos"
-	UploadPrefixMenuImages = "menu-images"
-	MaxUploadBytes         = 8 * 1024 * 1024
+	UploadPrefixLogos            = "logos"
+	UploadPrefixMenuImages       = "menu-images"
+	UploadPrefixCustomerAvatars  = "customer-avatars"
+	MaxUploadBytes               = 8 * 1024 * 1024
+	MaxCustomerAvatarUploadBytes = 4 * 1024 * 1024
 )
 
 type PresignRequest struct {
@@ -41,6 +43,30 @@ func (r *PresignRequest) Validate() error {
 	return nil
 }
 
+// CustomerPresignRequest is the customer-app payload for profile photo
+// uploads. It enforces a 4MB cap and the customer-avatars prefix.
+type CustomerPresignRequest struct {
+	Filename    string `json:"filename"`
+	ContentType string `json:"content_type"`
+	Size        int64  `json:"size"`
+}
+
+func (r *CustomerPresignRequest) Validate() error {
+	if !strings.HasPrefix(r.ContentType, "image/") {
+		return errors.New("content_type must be an image/* type")
+	}
+	if r.Size <= 0 {
+		return errors.New("size is required")
+	}
+	if r.Size > MaxCustomerAvatarUploadBytes {
+		return errors.New("file too large (max 4MB)")
+	}
+	if strings.TrimSpace(r.Filename) == "" {
+		return errors.New("filename is required")
+	}
+	return nil
+}
+
 type PresignResult struct {
 	UploadURL string `json:"upload_url"`
 	PublicURL string `json:"public_url"`
@@ -55,6 +81,7 @@ type DirectResult struct {
 type UploadService interface {
 	Presign(ctx context.Context, req *PresignRequest) (*PresignResult, error)
 	Direct(ctx context.Context, prefix, filename, contentType string, size int64, body []byte) (*DirectResult, error)
+	PresignCustomerAvatar(ctx context.Context, req *CustomerPresignRequest) (*PresignResult, error)
 }
 
 type uploadService struct{}
@@ -69,6 +96,22 @@ func (s *uploadService) Presign(ctx context.Context, req *PresignRequest) (*Pres
 	uploadURL, err := s3util.PresignedPutURL(ctx, key, req.ContentType)
 	if err != nil {
 		return nil, fmt.Errorf("UploadService.Presign: %w", err)
+	}
+	return &PresignResult{
+		UploadURL: uploadURL,
+		PublicURL: s3util.PublicURLFor(key),
+		Key:       key,
+	}, nil
+}
+
+func (s *uploadService) PresignCustomerAvatar(ctx context.Context, req *CustomerPresignRequest) (*PresignResult, error) {
+	if !s3util.IsConfigured() {
+		return nil, errors.New("S3 is not configured")
+	}
+	key := s3util.BuildObjectKey(UploadPrefixCustomerAvatars, req.Filename)
+	uploadURL, err := s3util.PresignedPutURL(ctx, key, req.ContentType)
+	if err != nil {
+		return nil, fmt.Errorf("UploadService.PresignCustomerAvatar: %w", err)
 	}
 	return &PresignResult{
 		UploadURL: uploadURL,

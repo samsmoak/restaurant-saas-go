@@ -1,0 +1,918 @@
+================================================================================
+SAVORAR — END-TO-END REFACTOR PROMPT (FOR CLAUDE CODE)
+================================================================================
+
+You are refactoring the Flutter app at ~/Desktop/auragoclient into a premium
+food-delivery product called "Savorar". The new app must:
+
+  * Connect EXCLUSIVELY to the Go backend at ~/Desktop/restaurant-saas-go.
+  * Contain ZERO references to the old "aurago" backend, Firebase project,
+    OAuth client IDs, package names, bundle IDs, or any other legacy credentials.
+  * Keep BLoC as state management (DO NOT migrate to Riverpod).
+  * Adopt the clean-architecture, dio-interceptor, exception-hierarchy and
+    theme-extension patterns extracted from ~/Desktop/crisisechomobile.
+  * Implement the new design system (deep navy + black + white + vibrant red,
+    plus the accent palette defined below) as a centralised theme.
+  * Add the missing Go backend functionality (Section B) BEFORE touching the
+    Flutter side.
+
+Execute Sections A → B → C → D → E → F → G in order. Do not skip ahead.
+
+================================================================================
+SECTION A — BACKEND CONTRACT (SOURCE OF TRUTH)
+================================================================================
+
+Backend repo: ~/Desktop/restaurant-saas-go  (Go + Fiber + MongoDB + Stripe + S3 + WS)
+
+A.1  BASE URL & CONFIG
+----------------------
+The Flutter app must read its base URL from a build-time `--dart-define`
+(default value: the deployed Cloud Run URL — DO NOT hardcode the old aurago
+host). Add a single `lib/core/config/app_config.dart` exposing:
+
+    class AppConfig {
+      static const String apiBaseUrl =
+          String.fromEnvironment('SAVORAR_API_BASE_URL',
+              defaultValue: 'https://savorar-api.example.com');
+      static const String wsBaseUrl =
+          String.fromEnvironment('SAVORAR_WS_BASE_URL',
+              defaultValue: 'wss://savorar-api.example.com');
+      static const String googleOAuthClientId =
+          String.fromEnvironment('SAVORAR_GOOGLE_OAUTH_CLIENT_ID');
+      static const String stripePublishableKey =
+          String.fromEnvironment('SAVORAR_STRIPE_PUBLISHABLE_KEY');
+    }
+
+All HTTP routes are prefixed `/api`. WebSocket routes are prefixed `/ws`.
+
+A.2  AUTHENTICATION CONTRACT
+-----------------------------
+Type: HS256 JWT, 7-day TTL.
+Header: `Authorization: Bearer <token>`
+WS fallback: `?token=<jwt>` query param.
+Claims: `{sub: userId, email, iat, exp, restaurant_id?, role?}`.
+Refresh: NOT IMPLEMENTED — on 401, clear token + force re-login.
+Token storage: `flutter_secure_storage` (NEVER SharedPreferences).
+
+Endpoints used by the customer app:
+
+  POST   /api/auth/signup/customer     body: {full_name,email,phone,password}
+                                       resp: {user_id,email,token}
+  POST   /api/auth/login               body: {email,password}
+                                       resp: {user_id,email,token}
+  POST   /api/auth/google              body: {id_token}
+                                       resp: {user_id,email,token}
+  POST   /api/auth/email-available     body: {email}
+                                       resp: {available, registered_as?}
+  POST   /api/auth/signout             204
+  GET    /api/auth/memberships         JWT — returns admin restaurant list
+
+A.3  CUSTOMER PROFILE & ADDRESSES
+---------------------------------
+  GET    /api/me/profile               JWT
+  PUT    /api/me/profile               body: {full_name,phone,default_address?}
+  GET    /api/me/addresses             JWT
+  POST   /api/me/addresses             body: {label,address,city,state,zip}
+  DELETE /api/me/addresses/:id
+
+CustomerProfile shape:
+  {id,user_id,email,full_name,phone,default_address?,
+   addresses:[{id,label,address,city,state,zip}], created_at}
+
+A.4  RESTAURANT DISCOVERY (CUSTOMER-FACING)
+-------------------------------------------
+  GET    /api/restaurants/:restaurant_id            (public)
+  GET    /api/r/:restaurant_id/restaurant           (public, full)
+  GET    /api/r/:restaurant_id/restaurant/status    (open/closed)
+  GET    /api/r/:restaurant_id/menu                 (categories + items)
+
+Restaurant shape (fields the app must read):
+  {id,name,description,logo_url,phone,formatted_address,latitude,longitude,
+   timezone,delivery_fee,min_order_amount,estimated_pickup_time,
+   estimated_delivery_time,currency,opening_hours{...},manual_closed,
+   created_at}
+
+MenuItem shape:
+  {id,restaurant_id,category_id?,name,description,base_price,image_url?,
+   is_available,is_featured,display_order,
+   sizes:[{id,name,price_modifier,is_default}],
+   extras:[{id,name,price,is_available}]}
+
+A.5  ORDER & CHECKOUT (Stripe)
+------------------------------
+  POST   /api/r/:restaurant_id/checkout/create-intent
+         JWT + customer profile required.
+         body: {
+           order_type: "pickup"|"delivery",
+           customer_name, customer_phone, customer_email?,
+           delivery_address?, delivery_city?, delivery_state?, delivery_zip?,
+           delivery_notes?, special_instructions?,
+           items:[{menu_item_id, quantity,
+                   selected_size?, selected_extras?, special_instructions?}],
+           save_payment_method?: bool,
+           payment_method_id?: string
+         }
+         resp: {client_secret, order_id, order_number, total, currency}
+
+  GET    /api/r/:restaurant_id/orders/:order_number      (public tracking)
+  GET    /api/me/orders[?restaurant_id=...]              (JWT)
+  GET    /api/me/payment-methods                         (JWT)
+  POST   /api/me/payment-methods/setup-intent            (JWT)
+  DELETE /api/me/payment-methods/:id                     (JWT)
+
+Order statuses: new → preparing → ready → completed (pickup) | delivered
+                (delivery) ; any → cancelled.
+Payment statuses: pending | paid | failed.
+
+A.6  REAL-TIME ORDER TRACKING
+-----------------------------
+  WS   /ws/orders/:order_number      public, no auth required
+  WS   /ws/admin/orders              JWT scoped to restaurant (admin app only)
+
+Event envelope:
+  { "type": "ready"|"order.created"|"order.updated"|"order.deleted",
+    "order": { ... },
+    "ts": <unix-ms> }
+
+Heartbeat: server pings every 20s with 5s timeout — client must respond to
+ping frames automatically (web_socket_channel handles this).
+
+A.7  FILE UPLOADS (PROFILE PHOTO)
+---------------------------------
+  POST  /api/admin/uploads/presign    (admin app only — customer app does NOT
+                                       upload to this endpoint)
+
+The customer app does not need direct S3 uploads in v1. Profile photos can be
+deferred. If implemented later, a new public endpoint must be added — flag this
+in Section B.
+
+A.8  LEADS (LANDING-PAGE FORM) — not used by mobile app.
+
+A.9  ERROR FORMAT
+-----------------
+All errors: `{ "error": "<message>" }`.
+Status codes: 400 (validation/business), 401 (no/bad JWT), 402 (setup fee
+required — billing flow), 403 (forbidden), 404, 409 (conflict —
+duplicate email or item unavailable), 429 (rate-limited), 500, 503.
+
+A.10  CORS — already configured server-side; mobile is unaffected.
+
+================================================================================
+SECTION B — BACKEND ADDITIONS (IMPLEMENT IN restaurant-saas-go FIRST)
+================================================================================
+
+The Savorar mobile app needs the following endpoints that DO NOT yet exist in
+restaurant-saas-go. Implement each addition fully (route registration +
+controller + service + repository + model + Mongo indexes) before touching the
+Flutter code. Each addition includes the exact Go code skeleton to add.
+
+B.1  CUSTOMER-FACING RESTAURANT LIST + SEARCH
+---------------------------------------------
+Currently the backend has no `GET /api/restaurants` listing endpoint and no
+search. The Flutter discovery feed needs:
+
+  GET /api/restaurants
+        Query params:
+          q             (string, optional — text query)
+          lat, lng      (float, optional — for distance scoring)
+          cuisine       (string, optional)
+          limit         (int, default 25, max 50)
+          offset        (int, default 0)
+        Response:
+          { "restaurants": [ Restaurant (with computed `distance_km` if lat/lng) ],
+            "total": int, "limit": int, "offset": int }
+
+  GET /api/restaurants/search
+        Same params as above plus full-text + ranking. Wraps OpenSearch when
+        configured, falls back to Mongo `$text` index when not.
+
+  GET /api/restaurants/search/suggest?q=<prefix>
+        Returns `{suggestions: [string]}`. Pulls top N restaurant names &
+        cuisines matching the prefix.
+
+  POST /api/ai/search
+        body: { "query": "spicy thai under 30 min near me",
+                "lat": ..., "lng": ... }
+        resp: { "intent": { cuisine?, max_delivery_minutes?,
+                            dietary_tags?, price_band?, ... },
+                "restaurants": [ Restaurant ] }
+        Server-side: call an LLM (or rule-based parser if no LLM key) to extract
+        intent → translate to OpenSearch query → return ranked restaurants.
+
+Add these files:
+  internal/apps/discovery/controller/controller.go
+  internal/apps/discovery/service/service.go
+  internal/apps/discovery/repository/repository.go
+  internal/apps/discovery/opensearch/client.go        (new dep)
+
+Register routes in internal/server/routes.go inside the public `api` group:
+  api.Get("/restaurants", discoveryCtl.List)
+  api.Get("/restaurants/search", discoveryCtl.Search)
+  api.Get("/restaurants/search/suggest", discoveryCtl.Suggest)
+  api.Post("/ai/search", discoveryCtl.AISearch)
+
+Add Mongo indexes in internal/database/database.go:
+  restaurants: { name: "text", description: "text", cuisine_tags: "text" }
+  restaurants: { location: "2dsphere" }   // requires storing GeoJSON Point
+
+Add fields to Restaurant model (internal/apps/restaurant/model/model.go):
+  CuisineTags          []string  `bson:"cuisine_tags"`
+  Location             GeoJSON   `bson:"location,omitempty"`   // Point
+  AverageRating        float64   `bson:"average_rating"`
+  RatingCount          int       `bson:"rating_count"`
+  CompletionRate       float64   `bson:"completion_rate"`      // 0-1
+  AveragePrepMinutes   int       `bson:"average_prep_minutes"`
+  PriceBand            int       `bson:"price_band"`           // 1-4 ($-$$$$)
+
+OpenSearch composite ranking spec (function_score):
+
+  weights: price 0.4, quality 0.3, speed 0.2, reliability 0.1
+  hybrid retrieval: BM25 over (name, description, cuisine_tags) + KNN over
+  restaurant embeddings, combined with Reciprocal Rank Fusion.
+
+  Hard rules:
+    - rating_count < 20  → quality_score = 0.5 (neutral)
+    - average_rating < 3.0 → EXCLUDE from results
+    - completion_rate < 0.80 → multiplicative penalty *0.7
+    - price filter is NEVER exposed to user (algorithm-only)
+
+Pseudocode handler:
+
+  func (c *Controller) Search(ctx *fiber.Ctx) error {
+      q := ctx.Query("q")
+      lat, _ := strconv.ParseFloat(ctx.Query("lat"), 64)
+      lng, _ := strconv.ParseFloat(ctx.Query("lng"), 64)
+      limit := parseLimit(ctx, 25, 50)
+      offset := parseOffset(ctx)
+      results, total, err := c.svc.HybridSearch(ctx.Context(),
+          q, lat, lng, limit, offset)
+      if err != nil { return fiber.NewError(500, err.Error()) }
+      return ctx.JSON(fiber.Map{
+          "restaurants": results, "total": total,
+          "limit": limit, "offset": offset,
+      })
+  }
+
+If OPENSEARCH_URL env var is unset, the service must fall back to a Mongo
+aggregation pipeline that produces equivalent ranking with $function_score-like
+$addFields and $sort stages. Customer app must work in either mode.
+
+B.2  PER-ORDER TRANSACTION FEE TRACKING ($0.99/order)
+-----------------------------------------------------
+Backend has billing scaffolding but does NOT track per-order fees or current
+month's order count. Add:
+
+New collection: `billing_usage`
+  { _id, restaurant_id, period_start, period_end, order_count,
+    per_order_fee_total, currency, created_at, updated_at }
+  Indexes: { restaurant_id: 1, period_start: 1 } unique
+
+Hook into order creation (internal/apps/order/service/service.go, after the
+order is inserted with payment_status="paid" via Stripe webhook):
+  go billingUsageSvc.RecordOrder(ctx, restaurantID, 0.99)
+
+  func (s *Service) RecordOrder(ctx context.Context, rid primitive.ObjectID,
+                                fee float64) error {
+      now := time.Now().UTC()
+      ps := time.Date(now.Year(), now.Month(), 1, 0,0,0,0, time.UTC)
+      pe := ps.AddDate(0, 1, 0)
+      _, err := s.repo.coll.UpdateOne(ctx,
+          bson.M{"restaurant_id": rid, "period_start": ps},
+          bson.M{
+              "$inc": bson.M{"order_count": 1, "per_order_fee_total": fee},
+              "$setOnInsert": bson.M{"period_end": pe, "currency": "usd",
+                                     "created_at": now},
+              "$set": bson.M{"updated_at": now},
+          },
+          options.Update().SetUpsert(true),
+      )
+      return err
+  }
+
+B.3  TIER STATUS ENDPOINTS
+--------------------------
+Add to billing app:
+
+  GET /api/admin/billing/usage
+      resp: { period_start, period_end, order_count, per_order_fee_total,
+              tier: 1|2|3, base_price: 49|99|149,
+              tier_thresholds: {tier1:[1,250], tier2:[251,750], tier3:[751,null]},
+              projected_total: <base + per_order_fee_total> }
+
+  GET /api/admin/billing/tier
+      resp: { current_tier:1|2|3, base_price, includes_orders, next_tier_at }
+
+Tier rules:
+  count <= 250  → tier 1, base 49
+  count <= 750  → tier 2, base 99
+  count >  750  → tier 3, base 149
+
+Add to billing/controller/controller.go and register in routes.go beside
+existing `/admin/billing/*` routes.
+
+B.4  RESTAURANT REVIEWS (REQUIRED FOR RANKING)
+----------------------------------------------
+Ranking depends on average_rating and rating_count, but no review system
+exists. Add minimum:
+
+New collection: `reviews`
+  { _id, restaurant_id, order_id, customer_id, rating (1-5),
+    comment?, created_at }
+  Indexes: { restaurant_id: 1, created_at: -1 },
+           { order_id: 1 } unique  // one review per order
+
+  POST /api/me/reviews
+       JWT, body: { order_id, rating, comment? }
+       Validates order belongs to caller and status in (completed, delivered).
+  GET  /api/restaurants/:id/reviews?limit=20&offset=0
+       Public.
+
+After insert/update/delete, recompute restaurant.average_rating and
+rating_count via aggregation:
+  pipeline: [{ $match: { restaurant_id }},
+             { $group: { _id: null, avg: {$avg:"$rating"},
+                                    cnt: {$sum: 1}}}]
+  Then update restaurants document.
+
+B.5  ORDER COMPLETION RATE (REQUIRED FOR RANKING)
+-------------------------------------------------
+Compute server-side as:
+  completion_rate = (#orders with status in (completed,delivered)) /
+                    (#orders with status != cancelled)
+  over the last 90 days.
+
+Add a daily background job (or compute lazily on read in v1):
+  internal/apps/restaurant/service/service.go:
+    func (s *Service) RecomputeOperationalMetrics(ctx, rid)
+
+Call after every order status update.
+
+B.6  FAVORITES
+--------------
+The old aurago backend exposed favorites; the new backend does not. Add:
+
+Collection: `favorites`
+  { _id, customer_id, restaurant_id, created_at }
+  Indexes: { customer_id: 1, restaurant_id: 1 } unique
+
+Endpoints (under /api/me):
+  GET    /api/me/favorites                   resp: [Restaurant]
+  POST   /api/me/favorites                   body: {restaurant_id}
+  DELETE /api/me/favorites/:restaurant_id
+
+B.7  CONVERSATIONAL AI CHAT ENDPOINT
+------------------------------------
+The old backend had `/chat/process-message`. Re-create as:
+  POST /api/ai/chat
+       JWT, body: { messages: [{role:"user"|"assistant", content}],
+                    context?: { lat?, lng? } }
+       resp: { reply: string,
+               actions?: [{type:"search", payload:{query, filters}}] }
+
+Implementation: thin wrapper around an LLM (env var `LLM_API_KEY` —
+provider-agnostic interface). When LLM unconfigured, return a deterministic
+"AI is unavailable" reply with HTTP 200 (do not 500).
+
+B.8  PROFILE PHOTO UPLOAD (CUSTOMER)
+------------------------------------
+Add:
+  POST /api/me/uploads/presign
+       JWT, body: {filename, content_type, size}
+       resp: {upload_url, public_url, key}
+  Behaves identically to /admin/uploads/presign but limited to a `customer-avatars`
+  prefix and 4 MB max.
+
+Wire into PUT /api/me/profile so the response includes `photo_url`.
+Add `photo_url` field to customer_profiles collection.
+
+B.9  ENV VARS TO ADD
+--------------------
+  OPENSEARCH_URL              (optional — if unset, Mongo fallback used)
+  OPENSEARCH_USERNAME
+  OPENSEARCH_PASSWORD
+  LLM_API_KEY                 (optional — if unset, AI endpoints return graceful fallback)
+  LLM_PROVIDER                (e.g. "anthropic" | "openai")
+
+Validate all new env vars in cmd/api/main.go alongside existing checks; missing
+optional vars must NOT crash startup.
+
+B.10  WEBSOCKET RECONNECT TOKEN
+-------------------------------
+Public order tracking WS uses no auth — fine. No additions required.
+
+================================================================================
+SECTION C — FLUTTER ARCHITECTURE
+================================================================================
+
+C.1  STATE MANAGEMENT — KEEP BLoC.
+Do NOT introduce flutter_riverpod. The crisisechomobile patterns we extract
+must be adapted to BLoC + get_it where they reference Riverpod providers.
+
+C.2  NEW FOLDER STRUCTURE (lib/)
+--------------------------------
+  lib/
+  ├── main.dart                        // bootstrap
+  ├── app.dart                         // root widget
+  ├── core/
+  │   ├── config/app_config.dart       // dart-define env vars
+  │   ├── di/injector.dart             // get_it registrations
+  │   ├── network/
+  │   │   ├── api_client.dart          // Dio + interceptors
+  │   │   ├── api_endpoints.dart       // every URL string
+  │   │   ├── api_exceptions.dart      // exception hierarchy
+  │   │   ├── auth_interceptor.dart
+  │   │   ├── unauthorized_interceptor.dart
+  │   │   └── websocket_client.dart    // web_socket_channel wrapper
+  │   ├── storage/secure_storage.dart  // flutter_secure_storage wrapper
+  │   ├── routing/app_router.dart      // go_router with auth bridge
+  │   ├── theme/
+  │   │   ├── app_colors.dart
+  │   │   ├── app_typography.dart
+  │   │   ├── app_spacing.dart
+  │   │   ├── app_radius.dart
+  │   │   ├── app_shadows.dart
+  │   │   ├── app_gradients.dart
+  │   │   ├── app_motion.dart
+  │   │   ├── app_theme_extension.dart // BuildContext.colors getter
+  │   │   └── app_theme.dart           // ThemeData
+  │   └── widgets/                     // shared widgets
+  │       ├── glass_card.dart
+  │       ├── primary_button.dart
+  │       ├── error_state.dart
+  │       ├── loading_shimmer.dart
+  │       └── empty_state.dart
+  └── features/
+      ├── auth/
+      │   ├── data/{models,sources,repositories}/
+      │   ├── domain/{entities,repositories}/
+      │   └── presentation/{bloc,pages,widgets}/
+      ├── discovery/                   // home + restaurant feed + search + AI
+      ├── restaurant/                  // detail + menu + cart
+      ├── checkout/
+      ├── orders/                      // history + live tracking
+      ├── profile/                     // profile + addresses + payment methods
+      ├── favorites/
+      ├── reviews/
+      └── chat/                        // conversational AI
+
+C.3  PATTERNS PORTED FROM crisisechomobile (adapted to BLoC)
+------------------------------------------------------------
+  1. Centralised Dio client with interceptors (auth, 401-logout, exception map).
+  2. Exception hierarchy:
+       ApiException
+       ├─ TimeoutException
+       ├─ NetworkException
+       ├─ UnauthorizedException
+       ├─ NotFoundException
+       ├─ ConflictException
+       ├─ ValidationException
+       └─ ServerException
+  3. ApiEndpoints class with every URL.
+  4. Repository pattern: each repo depends only on ApiClient + SecureStorage.
+  5. Theme extension + `context.colors` accessor.
+  6. Reusable error/loading widgets (ErrorState, LoadingShimmer, EmptyState).
+  7. GoRouter with auth-state guard:
+       Listen to AuthBloc state stream → notifyListeners on login/logout →
+       redirect() pushes to /welcome on unauth, /home on auth.
+  8. WebSocket service with auto-reconnect (exponential backoff, 1s..30s).
+  9. Repository methods throw typed ApiException; BLoCs catch and map to error
+     state.
+
+C.4  DEPENDENCY INJECTION (get_it)
+----------------------------------
+  lib/core/di/injector.dart registers (singletons unless noted):
+    - SecureStorageService
+    - Dio (configured)
+    - ApiClient
+    - WebSocketClient
+    - All repositories (factory or lazy singleton)
+    - All BLoCs (factory)
+  Bootstrap call: `await configureDependencies()` in main().
+
+C.5  FILES TO DELETE FROM auragoclient
+--------------------------------------
+  lib/firebase_options.dart                       (NO Firebase in v1)
+  lib/presentation/chat copy/                      (entire dead folder)
+  lib/services/auth_service.dart                   (replaced by SecureStorageService)
+  ALL data sources under lib/data/source/*         (rewritten)
+  ALL old repositories under lib/data/repository/* (rewritten)
+  lib/config/palette.dart                          (replaced by core/theme/*)
+  lib/data/notifiers.dart                          (BLoC-only, no ValueNotifier)
+  Any *.json or .plist file containing an "aurago" project.
+
+C.6  FILES TO KEEP & ADAPT (after URL/credential scrub)
+-------------------------------------------------------
+  Reusable widgets: skeleton_card_widget, server/network/permission error
+    widgets — move into core/widgets/ and rename for consistency.
+  Cart logic in lib/presentation/Restaurant/bloc/cart_bloc/cart_bloc.dart —
+    extract pure cart math, drop any HTTP call, port to features/restaurant/.
+  Order placement form fields — port markup into features/checkout/, rebind
+    to new BLoC + repository.
+
+C.7  pubspec.yaml CHANGES
+-------------------------
+ADD:
+  dio: ^5.7.0
+  web_socket_channel: ^3.0.2
+  go_router: ^14.8.1
+  get_it: ^7.7.0
+  flutter_secure_storage: ^9.2.4
+  freezed_annotation: ^2.4.4
+  json_annotation: ^4.9.0
+  flutter_dotenv: ^5.2.1                 (only if you decide on .env approach)
+  flutter_stripe: ^11.2.0
+  glass_kit: ^4.0.1                      (or implement BackdropFilter manually)
+  flutter_animate: ^4.5.2
+  freezed: ^2.5.7  (dev)
+  json_serializable: ^6.8.0  (dev)
+DROP:
+  firebase_core, firebase_auth, cloud_firestore
+  http (replaced by dio)
+KEEP:
+  flutter_bloc, equatable, google_sign_in (used only to get id_token →
+  send to /api/auth/google), sign_in_with_apple (same), google_maps_flutter,
+  geolocator, cached_network_image, shimmer, google_fonts, lottie,
+  flutter_svg, intl, image_picker, uuid, crypto.
+
+================================================================================
+SECTION D — CREDENTIAL & URL ERADICATION (RUN BEFORE ANY OTHER WORK)
+================================================================================
+
+The following strings must NOT appear anywhere in the new codebase. Run a
+project-wide search and remove every occurrence:
+
+  auragoserver-329115903.us-central1.run.app
+  aurago.onrender.com
+  Any 192.168.* / 100.96.* / *.local:8080 dev URLs
+  AIzaSyDuAFgx9HNekdO_0A41QA0f869UkrKPWcs
+  AIzaSyCXyxwpLa3RAYY15nBbjbF1-ilKZ8ZMD8Y
+  AIzaSyBXCyfJNq7EM4b9IB5g45JK_gII49IY3JI
+  17256259689 (and every OAuth client suffix derived from it)
+  auragoclient (Firebase project ID)
+  com.aurago.app, com.aurago.auragoclient, com.aurago.auragorestaurant,
+  com.example.aurazone
+
+Replace package/bundle id with `com.savorar.app` everywhere
+(android/app/build.gradle applicationId, ios/Runner.xcodeproj
+PRODUCT_BUNDLE_IDENTIFIER, AndroidManifest.xml package, Info.plist
+CFBundleIdentifier, etc.).
+
+Delete:
+  android/app/google-services.json
+  ios/Runner/GoogleService-Info.plist
+Remove the `apply plugin: 'com.google.gms.google-services'` line from
+android/app/build.gradle and the FirebaseAppDelegate calls from AppDelegate.swift.
+
+If Google Sign-In is retained, configure new Savorar OAuth client IDs via the
+SAVORAR_GOOGLE_OAUTH_CLIENT_ID dart-define and platform-specific reverse-client
+URL schemes — but do NOT commit any actual ID into source.
+
+After the scrub, run:  `grep -r -E "aurago|17256259689|AIzaSy" lib/ android/ ios/ web/`
+The result MUST be empty.
+
+================================================================================
+SECTION E — DESIGN SYSTEM
+================================================================================
+
+E.1  COLOR PALETTE  (lib/core/theme/app_colors.dart)
+----------------------------------------------------
+Primary brand:
+  navyDeep         #0A0F1E   primary background
+  blackPure        #000000   secondary background, deepest cards
+  whitePure        #FFFFFF   primary text & icons
+  redVibrant       #E8192C   primary accent / CTA
+  redVibrantBright #FF2C40   pressed / hover state
+  redVibrantDark   #B8121F   active / shadow tint
+
+Secondary accents (designer-selected to harmonise with navy/black/white/red):
+  goldDeep         #D4A24C   premium / featured badges
+  goldSoft         #F2C879   highlights on cards
+  electricBlue     #2D7FF9   info, links, AI accent
+  coralSoft        #FF8A7A   tertiary callouts (used sparingly)
+  tealMuted        #4ECDC4   success-adjacent accent (e.g. delivery ETA)
+
+Surfaces (dark theme is the only theme — Savorar is dark-by-design):
+  surface          #11172A   card background on navyDeep
+  surfaceElevated  #1A2138   raised cards / sheets
+  surfaceMuted     #1F1F1F   on blackPure cards
+  outline          #243049   subtle borders
+  divider          #1B2238
+
+Text hierarchy:
+  textPrimary      #FFFFFF
+  textSecondary    #C7CCDB
+  textHint         #7A8198
+  textDisabled     #4B5167
+  textInverse      #0A0F1E    (used on red/light surfaces)
+
+Semantic:
+  success          #2DBE7E
+  warning          #F2A33A
+  error            #E8192C    (same as redVibrant — intentional)
+  info             #2D7FF9
+
+Gradients (lib/core/theme/app_gradients.dart):
+  heroOverlay      LinearGradient(top→bottom):
+                     [transparent, navyDeep@.0, navyDeep@.85]
+  ctaRed           LinearGradient(135deg):
+                     [#FF2C40, #E8192C, #B8121F]
+  cardSheen        LinearGradient(160deg):
+                     [#1A2138, #11172A]
+  goldAccent       LinearGradient(135deg):
+                     [#F2C879, #D4A24C]
+
+E.2  TYPOGRAPHY (lib/core/theme/app_typography.dart)
+----------------------------------------------------
+Family: GoogleFonts.inter (body), GoogleFonts.playfairDisplay (display heads —
+gives Savorar its premium editorial feel).
+Scale (TextTheme):
+  displayLarge   PlayfairDisplay 40 / 48  w700 / -0.5
+  displayMedium  PlayfairDisplay 32 / 40  w700
+  displaySmall   PlayfairDisplay 26 / 32  w600
+  headlineMedium Inter 22 / 28  w600
+  headlineSmall  Inter 18 / 24  w600
+  titleLarge     Inter 17 / 22  w600
+  titleMedium    Inter 15 / 20  w600
+  titleSmall     Inter 13 / 18  w600 / +0.4 letter
+  bodyLarge      Inter 16 / 24  w400
+  bodyMedium     Inter 14 / 20  w400
+  bodySmall      Inter 12 / 16  w400
+  labelLarge     Inter 14 / 16  w600 / +0.3
+  labelMedium    Inter 12 / 14  w500 / +0.5
+  labelSmall     Inter 11 / 12  w500 / +0.6 / uppercase
+
+E.3  SPACING (lib/core/theme/app_spacing.dart) — 4px base grid
+  xs2 = 2, xs = 4, sm = 8, md = 12, lg = 16, xl = 20, xl2 = 24,
+  xl3 = 32, xl4 = 40, xl5 = 56, xl6 = 72.
+
+E.4  RADIUS (lib/core/theme/app_radius.dart)
+  sm = 8, md = 12, lg = 16, xl = 24, pill = 999.
+
+E.5  SHADOWS / ELEVATION (lib/core/theme/app_shadows.dart)
+  level0 — none
+  level1 — y4 blur12  rgba(0,0,0,0.24)
+  level2 — y8 blur20  rgba(0,0,0,0.32)
+  level3 — y16 blur32 rgba(0,0,0,0.40)
+  glowRed — y0 blur24 rgba(232,25,44,0.45)   (use on primary CTA hover/pressed)
+
+E.6  ICONS
+  Library: lucide_icons or material_symbols_outlined (outlined variant).
+  Default size 22, tap-target 44.
+
+E.7  MOTION (lib/core/theme/app_motion.dart)
+  durationFast    150 ms
+  durationBase    250 ms
+  durationSlow    400 ms
+  curveStandard   Curves.easeOutCubic
+  curveEmphasised Cubic(0.2, 0.0, 0.0, 1.0)
+  Page transitions: custom CupertinoPageRoute-like fade-through
+  (FadeForwardsPageTransitionsBuilder) on Android & iOS.
+
+E.8  GLASSMORPHISM
+  Implement `GlassCard` widget: BackdropFilter blur=20σ, sigma=20,
+  background=surfaceElevated.withOpacity(0.55), 1px outline=outline.withOpacity(0.4),
+  radius=lg. Used on bottom sheets, item-detail overlays, the AI chat
+  composer.
+
+E.9  CTAS
+  Primary button: gradient ctaRed, radius pill, height 56, label
+  labelLarge whitePure, glowRed shadow on press.
+  Secondary button: surfaceElevated bg, redVibrant 1px border, redVibrant text.
+  Tertiary: textPrimary text only, redVibrant underline on press.
+
+================================================================================
+SECTION F — UI / SCREEN SPECIFICATIONS
+================================================================================
+
+Theme is dark-by-default; navyDeep is the canvas everywhere.
+
+F.1  SPLASH (features/_root/splash_page.dart)
+  Full-bleed navyDeep background. Centered Savorar wordmark in
+  PlayfairDisplay 56 white with redVibrant underline accent. Subtle goldSoft
+  shimmer animation across the wordmark (1200ms loop).
+
+F.2  ONBOARDING (3 pages)
+  Page 1: "Crafted for cravings" — full-bleed food image + heroOverlay gradient.
+  Page 2: "Real-time, every bite" — animated order-status pill demo.
+  Page 3: "Your taste, our AI" — tease the AI search bar.
+  Indicator: 3 small pills, active = redVibrant, inactive = outline.
+  CTA at bottom: primary button "Get started".
+
+F.3  AUTH
+  Welcome / sign-in: glass card centered with email field, password field, full-
+  width primary CTA "Sign in", tertiary "Create account", divider with
+  textHint "OR", Google + Apple buttons (outlined, surfaceElevated).
+  Errors render as a redVibrant pill above the form (slide-down 250ms).
+
+F.4  HOME / DISCOVERY (features/discovery/presentation/pages/home_page.dart)
+  Top bar: location pill (📍 textSecondary) on the left, profile avatar on the
+  right (44 circle, goldDeep ring on hover).
+  Hero search composer (sticky):
+    – glass card pill, height 60
+    – left segment: text input "Search restaurants, cuisines…"
+    – right segment: vertical divider + AI icon button (redVibrant accent ring)
+      that opens the AI chat sheet.
+  Quick chips row: "Near you", "Top-rated", "Under 30 min", "Trending"
+  (label chips, surfaceElevated, redVibrant when active).
+  Featured carousel: full-width restaurant cards (see F.5), 1.4 viewport-
+  fraction snap.
+  Grid below: 1-column list of RestaurantCard.
+
+F.5  RESTAURANT CARD COMPONENT
+  Aspect 16:9 image, heroOverlay gradient on bottom 55%.
+  Top-right: goldAccent gradient pill "Featured" if is_featured.
+  Bottom-left overlay (on the gradient):
+     headlineSmall white  →  restaurant name
+     bodySmall textSecondary → cuisine tags joined by ·
+     row of micro stats:  ★ 4.8 (124) · 25–35 min · 1.2 km · $$$
+  Card radius lg, level2 shadow, navyDeep background under image when no image.
+
+F.6  RESTAURANT DETAIL
+  Sliver app bar: collapsing image header with heroOverlay; title appears in
+  app bar after collapse.
+  Sticky tab bar across categories (horizontal pill scroller, redVibrant
+  underline indicator).
+  Each menu item row: square image left (radius md), title + description
+  right, base price in titleMedium, "+ Add" pill button on the right (cta-red
+  gradient, height 36).
+  Floating cart pill at bottom-right when items > 0:
+    redVibrant gradient, glowRed shadow, "View cart · 3 · $42.50".
+
+F.7  CART / CHECKOUT
+  Modal bottom sheet (glassCard) for cart. Each line item with quantity
+  stepper. Below: totals breakdown (subtotal, delivery_fee, total).
+  "Continue to checkout" primary CTA → Checkout page.
+  Checkout page:
+    – Order type segmented control (Pickup / Delivery), red active.
+    – Delivery address selector: tap → address-list bottom sheet.
+    – Payment method selector: list of saved cards (Stripe), "+ Add card"
+      → Stripe SetupIntent flow.
+    – Place order primary CTA at bottom; total amount to the left of CTA.
+  All forms use textHint placeholders, redVibrant focus border (1.5px),
+  semantic.error redVibrant text on validation failure.
+
+F.8  ORDER TRACKING
+  Live status timeline (vertical), each step a circle:
+    – Filled redVibrant for past/current
+    – Outline outline for future
+  Animated pulse on the current step (scale 1.0↔1.15, 1200ms).
+  ETA card (glass) with estimated_ready_time countdown.
+  Map block (google_maps_flutter) only for delivery orders, with
+  restaurant pin + delivery pin.
+  Bottom: "Contact restaurant" secondary button.
+  Subscribes to /ws/orders/:order_number; on disconnect show subtle
+  textSecondary "Reconnecting…" toast.
+
+F.9  ORDERS LIST
+  Two tabs: Active / History. Each row: image thumb, restaurant name,
+  status pill, total. Tap → order tracking page.
+  Empty state uses EmptyState widget with goldSoft illustration and CTA
+  "Discover restaurants".
+
+F.10  PROFILE
+  Sections (cards):
+    – Account: name, email, phone (edit pencil → ProfileEdit page)
+    – Saved addresses (manage)
+    – Payment methods (manage)
+    – Favorites (entry)
+    – Sign out (tertiary text, redVibrant)
+  Profile photo: 88 circle, goldDeep ring, image_picker → presigned upload.
+
+F.11  AI CHAT (features/chat/presentation/pages/chat_page.dart)
+  Background: navyDeep with subtle radial gradient from electricBlue@0.05 in
+  the top-right.
+  Message bubbles:
+    – User: whitePure background, textInverse text, radius lg, shadow level1,
+      right-aligned, max 80% width.
+    – Assistant: surfaceElevated background, textPrimary text, redVibrant 2px
+      left-edge accent, left-aligned, max 88% width.
+  Composer: GlassCard pill with text field + redVibrant send button (44
+  circle, gradient ctaRed). Voice icon optional (left of send).
+  Suggestion chips above composer for first-turn ("Spicy thai under 30 min",
+  "Date-night sushi", "Healthy bowls under $20").
+  When the assistant returns an `actions: [{type:"search", payload}]`,
+  render an inline RestaurantCard carousel inside the assistant bubble.
+
+F.12  SEARCH RESULTS
+  Top: search query echoed in titleMedium with edit icon.
+  Active filter chips below (read-only — algorithm-driven, NEVER include
+  price filter UI).
+  Results list of RestaurantCard. Loading uses LoadingShimmer cards.
+  Empty: EmptyState with "No matches — try the AI search" tertiary CTA.
+
+F.13  BOTTOM NAVIGATION
+  4 tabs: Discover, Chat (AI), Orders, Profile.
+  Bar bg = blackPure with 1px top outline.
+  Active icon + label in redVibrant; inactive textHint.
+  Active item gets a 4px redVibrant pill indicator above the icon
+  (animate position with curveEmphasised, durationBase).
+
+F.14  ANIMATIONS / TRANSITIONS
+  Page transitions: fade-through (250ms).
+  Card press: scale to 0.98, durationFast.
+  Pull-to-refresh on home + orders list (CupertinoSliverRefreshControl with
+  redVibrant indicator).
+
+================================================================================
+SECTION G — FILE-BY-FILE EXECUTION ORDER
+================================================================================
+
+PHASE 1 — BACKEND (in restaurant-saas-go)
+  G.1  internal/database/database.go      — add new collections + indexes
+       (favorites, reviews, billing_usage; text + 2dsphere indexes)
+  G.2  internal/apps/restaurant/model/model.go
+       — add cuisine_tags, location, average_rating, rating_count,
+         completion_rate, average_prep_minutes, price_band
+  G.3  internal/apps/discovery/* (new app: list + search + suggest + ai_search)
+  G.4  internal/apps/discovery/opensearch/client.go (+ Mongo fallback path)
+  G.5  internal/apps/favorites/* (new app)
+  G.6  internal/apps/reviews/* (new app + post-write recompute hook into
+       restaurant aggregates)
+  G.7  internal/apps/billing/usage/* (new sub-app: usage tracking + tier endpoints)
+  G.8  internal/apps/order/service/service.go — call billingUsage.RecordOrder
+       on payment_intent.succeeded webhook handler; call
+       restaurant.RecomputeOperationalMetrics on every status update.
+  G.9  internal/apps/user/controller/controller.go + service — add presign
+       upload for customer avatars; add photo_url to profile.
+  G.10 internal/apps/ai/* (new app: POST /api/ai/chat with provider-agnostic
+       LLM client; graceful fallback when LLM_API_KEY unset).
+  G.11 internal/server/routes.go — register every new route under /api.
+  G.12 cmd/api/main.go — read OPENSEARCH_*, LLM_* env vars; warn but do not
+       crash if missing.
+  G.13 README.md — document every new endpoint, env var, and Mongo collection.
+  G.14 Run `go build ./...` and `go vet ./...`; fix all errors.
+  G.15 Add minimal handler tests for new endpoints (table tests).
+
+PHASE 2 — FLUTTER FOUNDATIONS (in auragoclient → rename to savorar)
+  G.16 Rename project: pubspec.yaml `name: savorar`, AndroidManifest, iOS
+       PRODUCT_BUNDLE_IDENTIFIER → com.savorar.app, app display name "Savorar".
+  G.17 Run Section D scrub. Verify with grep.
+  G.18 Update pubspec.yaml per C.7. Run `flutter pub get`.
+  G.19 Create lib/core/config/app_config.dart.
+  G.20 Create lib/core/theme/* per Section E (colors, typography, spacing,
+       radius, shadows, gradients, motion, theme_extension, theme).
+  G.21 Create lib/core/storage/secure_storage.dart.
+  G.22 Create lib/core/network/api_exceptions.dart.
+  G.23 Create lib/core/network/api_endpoints.dart with EVERY endpoint from
+       Section A + Section B.
+  G.24 Create lib/core/network/auth_interceptor.dart and
+       unauthorized_interceptor.dart.
+  G.25 Create lib/core/network/api_client.dart (Dio-based, exception mapping,
+       401 → clear storage + emit auth-bloc Logout event).
+  G.26 Create lib/core/network/websocket_client.dart with auto-reconnect.
+  G.27 Create lib/core/widgets/* (GlassCard, PrimaryButton, ErrorState,
+       LoadingShimmer, EmptyState).
+  G.28 Create lib/core/di/injector.dart and register everything.
+  G.29 Create lib/core/routing/app_router.dart with go_router and an
+       AuthBloc-driven `refreshListenable`.
+  G.30 Replace lib/main.dart with new bootstrap (DI init, Stripe init using
+       AppConfig.stripePublishableKey, runApp).
+
+PHASE 3 — FEATURE LAYER (one feature at a time, in this order)
+  G.31 features/auth/  (login, signup, google, apple, signout)
+  G.32 features/profile/ + features/profile addresses + payment-methods
+  G.33 features/discovery/ (home + search + AI search action chips)
+  G.34 features/restaurant/ (detail + menu + cart bloc — port cart math from
+       old CartBloc)
+  G.35 features/checkout/ (Stripe PaymentIntent flow via flutter_stripe)
+  G.36 features/orders/ (history list + active list + tracking page with WS)
+  G.37 features/favorites/
+  G.38 features/reviews/ (post-order review prompt + restaurant reviews list)
+  G.39 features/chat/ (AI chat with action-card rendering)
+
+PHASE 4 — POLISH & GATES
+  G.40 Run `flutter analyze`; resolve every warning.
+  G.41 Run `flutter test`; ensure existing tests are deleted or rewritten.
+  G.42 Manual smoke test on iOS simulator + Android emulator: signup → browse
+       → add to cart → checkout (Stripe test card 4242 4242 4242 4242) →
+       observe live status update over WS.
+  G.43 Re-run `grep -r -E "aurago|17256259689|AIzaSy|firebase" lib/ android/
+       ios/ web/`; result must be empty.
+  G.44 Confirm `lib/firebase_options.dart` is gone, no `Firebase.initializeApp`
+       call remains.
+  G.45 Build release variants:
+         flutter build apk --dart-define=SAVORAR_API_BASE_URL=...
+         flutter build ipa --dart-define=...
+       to verify dart-defines are wired correctly.
+
+================================================================================
+NON-NEGOTIABLES
+================================================================================
+
+  * BLoC stays. Riverpod is forbidden.
+  * Every API call goes through ApiClient → Dio → SAVORAR_API_BASE_URL.
+  * Tokens live in flutter_secure_storage only. Never SharedPreferences.
+  * No Firebase project, no firebase_* packages in v1.
+  * No price-filter UI ever. Composite ranking handles it.
+  * Restaurants with rating < 3.0 are excluded server-side. Client trusts the
+    server's filtering.
+  * The AI chat and AI search endpoints must degrade gracefully if LLM_API_KEY
+    is unset — never surface a 500 to the user.
+  * All money values come from the server (subtotal, delivery_fee, total).
+    The client never recomputes totals.
+  * On 401 from any endpoint, the auth interceptor clears the token, emits
+    AuthBloc.LoggedOut, and go_router redirects to /welcome.
+
+================================================================================
+END OF PROMPT
+================================================================================
