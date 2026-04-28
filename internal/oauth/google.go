@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strings"
 
 	"google.golang.org/api/idtoken"
 )
@@ -21,13 +22,31 @@ func VerifyIDToken(ctx context.Context, token string) (*GooglePayload, error) {
 	if token == "" {
 		return nil, errors.New("id_token is required")
 	}
-	audience := os.Getenv("GOOGLE_OAUTH_CLIENT_ID")
-	if audience == "" {
+	audienceEnv := os.Getenv("GOOGLE_OAUTH_CLIENT_ID")
+	if audienceEnv == "" {
 		return nil, errors.New("GOOGLE_OAUTH_CLIENT_ID not configured")
 	}
-	payload, err := idtoken.Validate(ctx, token, audience)
-	if err != nil {
-		return nil, fmt.Errorf("oauth.VerifyIDToken: %w", err)
+	var (
+		payload *idtoken.Payload
+		lastErr error
+	)
+	for _, aud := range strings.Split(audienceEnv, ",") {
+		aud = strings.TrimSpace(aud)
+		if aud == "" {
+			continue
+		}
+		p, err := idtoken.Validate(ctx, token, aud)
+		if err == nil {
+			payload = p
+			break
+		}
+		lastErr = err
+	}
+	if payload == nil {
+		if lastErr == nil {
+			lastErr = errors.New("no audiences configured")
+		}
+		return nil, fmt.Errorf("oauth.VerifyIDToken: %w", lastErr)
 	}
 	out := &GooglePayload{Sub: payload.Subject}
 	if v, ok := payload.Claims["email"].(string); ok {
