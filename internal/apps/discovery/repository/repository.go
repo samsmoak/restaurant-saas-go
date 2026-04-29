@@ -80,10 +80,12 @@ func compositeScoreField() bson.D {
 //   - average_rating < 3.0 with at least 20 ratings (new spots are kept)
 //   - manual_closed
 func availabilityMatch() bson.D {
+	// Use $not/{$gte} so that null/missing fields are treated as 0 (new
+	// restaurants with no rating data are always included).
 	return bson.D{{Key: "$match", Value: bson.D{
 		{Key: "manual_closed", Value: bson.D{{Key: "$ne", Value: true}}},
 		{Key: "$or", Value: bson.A{
-			bson.D{{Key: "rating_count", Value: bson.D{{Key: "$lt", Value: 20}}}},
+			bson.D{{Key: "rating_count", Value: bson.D{{Key: "$not", Value: bson.D{{Key: "$gte", Value: 20}}}}}},
 			bson.D{{Key: "average_rating", Value: bson.D{{Key: "$gte", Value: 3.0}}}},
 		}},
 	}}}
