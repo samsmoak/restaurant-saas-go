@@ -67,6 +67,19 @@ func (r *CustomerPresignRequest) Validate() error {
 	return nil
 }
 
+// ValidateForGet relaxes Validate for GET callers that can't include
+// the body's `size` (BACKEND_REQUIREMENTS.md §2 spec uses query
+// params).  We still enforce filename + image/* content type.
+func (r *CustomerPresignRequest) ValidateForGet() error {
+	if !strings.HasPrefix(r.ContentType, "image/") {
+		return errors.New("content_type must be an image/* type")
+	}
+	if strings.TrimSpace(r.Filename) == "" {
+		return errors.New("filename is required")
+	}
+	return nil
+}
+
 type PresignResult struct {
 	UploadURL string `json:"upload_url"`
 	PublicURL string `json:"public_url"`

@@ -1,6 +1,8 @@
 package controller
 
 import (
+	"time"
+
 	"github.com/gofiber/fiber/v2"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
@@ -59,7 +61,16 @@ func (ctl *RestaurantController) GetStatus(c *fiber.Ctx) error {
 	if r == nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{"error": "restaurant not found"})
 	}
+	// BACKEND_REQUIREMENTS.md §3 expects {is_open, next_open_at,
+	// manual_closed}. We compute is_open from the current weekday's
+	// opening_hours window in the restaurant's timezone (falls back
+	// to UTC when timezone is empty).  The legacy fields are kept on
+	// the response for the existing customer/admin Flutter clients
+	// that already consume them.
+	isOpen, nextOpenAt := computeOpenStatus(r)
 	return c.JSON(fiber.Map{
+		"is_open":       isOpen,
+		"next_open_at":  nextOpenAt,
 		"manual_closed": r.ManualClosed,
 		"opening_hours": r.OpeningHours,
 		"timezone":      r.Timezone,
@@ -67,6 +78,70 @@ func (ctl *RestaurantController) GetStatus(c *fiber.Ctx) error {
 		"name":          r.Name,
 		"id":            r.ID.Hex(),
 	})
+}
+
+// computeOpenStatus returns whether the restaurant is currently
+// accepting orders and, when closed, the next ISO timestamp at which
+// it'll re-open.  Manual close always wins; otherwise we look up the
+// row matching today's weekday in opening_hours.  When the timezone
+// or hours are missing we conservatively report open.
+func computeOpenStatus(r *model.Restaurant) (bool, *time.Time) {
+	if r.ManualClosed {
+		return false, nil
+	}
+	loc := time.UTC
+	if r.Timezone != "" {
+		if tz, err := time.LoadLocation(r.Timezone); err == nil {
+			loc = tz
+		}
+	}
+	now := time.Now().In(loc)
+	keys := []string{"sunday", "monday", "tuesday", "wednesday", "thursday", "friday", "saturday"}
+	day := keys[int(now.Weekday())]
+	hrs, ok := r.OpeningHours[day]
+	if !ok || hrs.Closed {
+		return false, nextOpenForward(r, now, loc, keys)
+	}
+	open, openErr := parseClock(hrs.Open, now, loc)
+	close, closeErr := parseClock(hrs.Close, now, loc)
+	if openErr != nil || closeErr != nil {
+		return true, nil
+	}
+	if !now.Before(open) && now.Before(close) {
+		return true, nil
+	}
+	if now.Before(open) {
+		return false, &open
+	}
+	return false, nextOpenForward(r, now, loc, keys)
+}
+
+// nextOpenForward walks the next 7 days and returns the first
+// non-closed open timestamp.
+func nextOpenForward(r *model.Restaurant, from time.Time, loc *time.Location, keys []string) *time.Time {
+	for i := 1; i <= 7; i++ {
+		day := from.AddDate(0, 0, i)
+		hrs, ok := r.OpeningHours[keys[int(day.Weekday())]]
+		if !ok || hrs.Closed {
+			continue
+		}
+		open, err := parseClock(hrs.Open, day, loc)
+		if err != nil {
+			continue
+		}
+		return &open
+	}
+	return nil
+}
+
+// parseClock combines an "HH:MM" string with the date portion of
+// `day` to produce a localised time.
+func parseClock(hm string, day time.Time, loc *time.Location) (time.Time, error) {
+	t, err := time.ParseInLocation("15:04", hm, loc)
+	if err != nil {
+		return time.Time{}, err
+	}
+	return time.Date(day.Year(), day.Month(), day.Day(), t.Hour(), t.Minute(), 0, 0, loc), nil
 }
 
 func (ctl *RestaurantController) GetByID(c *fiber.Ctx) error {

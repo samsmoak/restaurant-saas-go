@@ -85,15 +85,21 @@ func (ctl *PaymentController) CreateIntent(c *fiber.Ctx) error {
 	result.Order.PaymentIntentID = intentID
 	ctl.orders.BroadcastCreated(result.Order)
 
+	// Response shape carries every legacy key (so the existing
+	// admin/customer Flutter clients keep working) AND the spec-shaped
+	// fields demanded by BACKEND_REQUIREMENTS.md §5.
 	return c.JSON(fiber.Map{
-		"client_secret": clientSecret,
-		"clientSecret":  clientSecret,
-		"order_id":      result.Order.ID.Hex(),
-		"orderId":       result.Order.ID.Hex(),
-		"order_number":  result.Order.OrderNumber,
-		"orderNumber":   result.Order.OrderNumber,
-		"total":         result.Order.Total,
-		"currency":      result.Currency,
+		"client_secret":                clientSecret,
+		"clientSecret":                 clientSecret,
+		"order_id":                     result.Order.ID.Hex(),
+		"orderId":                      result.Order.ID.Hex(),
+		"order_number":                 result.Order.OrderNumber,
+		"orderNumber":                  result.Order.OrderNumber,
+		"total":                        result.Order.Total,
+		"currency":                     result.Currency,
+		"order_draft_id":               result.Order.ID.Hex(),
+		"payment_intent_client_secret": clientSecret,
+		"summary":                      result.Summary,
 	})
 }
 

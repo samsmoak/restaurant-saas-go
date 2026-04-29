@@ -29,7 +29,7 @@ func (ctl *MenuController) RegisterAdminRoutes(r fiber.Router) {
 
 func (ctl *MenuController) PublicMenu(c *fiber.Ctx) error {
 	rid := middleware.TenantIDFromCtx(c)
-	groups, err := ctl.svc.PublicMenu(c.UserContext(), rid)
+	groups, err := ctl.svc.PublicMenuView(c.UserContext(), rid)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}

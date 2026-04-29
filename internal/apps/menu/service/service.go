@@ -37,6 +37,7 @@ type MenuItemRequest struct {
 	IsFeatured   bool                 `json:"is_featured"`
 	IsAvailable  bool                 `json:"is_available"`
 	DisplayOrder int                  `json:"display_order"`
+	Tags         []string             `json:"tags"`
 	Sizes        []MenuItemSizeInput  `json:"sizes"`
 	Extras       []MenuItemExtraInput `json:"extras"`
 }
@@ -75,8 +76,17 @@ type MenuCategoryWithItems struct {
 	Items []*model.MenuItem `json:"items"`
 }
 
+// MenuCategoryWithItemsPublic is the customer-facing variant returned
+// by GET /api/r/{id}/menu — items use MenuItemPublicView so prices are
+// expressed in cents per BACKEND_REQUIREMENTS.md §3.
+type MenuCategoryWithItemsPublic struct {
+	categoryModel.Category
+	Items []*model.MenuItemPublicView `json:"items"`
+}
+
 type MenuService interface {
 	PublicMenu(ctx context.Context, restaurantID primitive.ObjectID) ([]MenuCategoryWithItems, error)
+	PublicMenuView(ctx context.Context, restaurantID primitive.ObjectID) ([]MenuCategoryWithItemsPublic, error)
 	ListAllItems(ctx context.Context, restaurantID primitive.ObjectID) ([]*model.MenuItem, error)
 	GetItemByID(ctx context.Context, restaurantID primitive.ObjectID, id string) (*model.MenuItem, error)
 	GetItemsByIDs(ctx context.Context, restaurantID primitive.ObjectID, ids []primitive.ObjectID) ([]*model.MenuItem, error)
@@ -118,6 +128,25 @@ func (s *menuService) PublicMenu(ctx context.Context, restaurantID primitive.Obj
 			group = []*model.MenuItem{}
 		}
 		out = append(out, MenuCategoryWithItems{Category: *c, Items: group})
+	}
+	return out, nil
+}
+
+// PublicMenuView is the customer-facing menu — same grouping as
+// PublicMenu but with each item projected through PublicView so the
+// money fields are in cents and tags are populated.
+func (s *menuService) PublicMenuView(ctx context.Context, restaurantID primitive.ObjectID) ([]MenuCategoryWithItemsPublic, error) {
+	groups, err := s.PublicMenu(ctx, restaurantID)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]MenuCategoryWithItemsPublic, 0, len(groups))
+	for _, g := range groups {
+		views := make([]*model.MenuItemPublicView, 0, len(g.Items))
+		for _, it := range g.Items {
+			views = append(views, it.PublicView())
+		}
+		out = append(out, MenuCategoryWithItemsPublic{Category: g.Category, Items: views})
 	}
 	return out, nil
 }
@@ -171,6 +200,7 @@ func (s *menuService) Create(ctx context.Context, restaurantID primitive.ObjectI
 		IsAvailable:  req.IsAvailable,
 		IsFeatured:   req.IsFeatured,
 		DisplayOrder: req.DisplayOrder,
+		Tags:         normaliseTags(req.Tags),
 		Sizes:        mapSizes(req.Sizes),
 		Extras:       mapExtras(req.Extras),
 		CreatedAt:    time.Now().UTC(),
@@ -205,6 +235,7 @@ func (s *menuService) Update(ctx context.Context, restaurantID primitive.ObjectI
 		{Key: "is_available", Value: req.IsAvailable},
 		{Key: "is_featured", Value: req.IsFeatured},
 		{Key: "display_order", Value: req.DisplayOrder},
+		{Key: "tags", Value: normaliseTags(req.Tags)},
 		{Key: "sizes", Value: sizes},
 		{Key: "extras", Value: extras},
 	}
@@ -227,6 +258,23 @@ func (s *menuService) Delete(ctx context.Context, restaurantID primitive.ObjectI
 		return errors.New("invalid id")
 	}
 	return s.repo.DeleteScoped(ctx, restaurantID, oid)
+}
+
+func normaliseTags(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, t := range in {
+		t = strings.TrimSpace(t)
+		if t == "" {
+			continue
+		}
+		if _, ok := seen[t]; ok {
+			continue
+		}
+		seen[t] = struct{}{}
+		out = append(out, t)
+	}
+	return out
 }
 
 func mapSizes(inputs []MenuItemSizeInput) []model.ItemSize {

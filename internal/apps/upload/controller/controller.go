@@ -24,7 +24,11 @@ func (ctl *UploadController) RegisterRoutes(r fiber.Router) {
 // RegisterMeRoutes wires the customer-facing avatar upload route under
 // /api/me/uploads. The route enforces a 4MB cap and writes to the
 // customer-avatars/ prefix only.
+//
+// Both GET (Savorar client per BACKEND_REQUIREMENTS.md §2) and POST
+// (legacy customer Flutter app) are accepted.
 func (ctl *UploadController) RegisterMeRoutes(r fiber.Router) {
+	r.Get("/uploads/presign", ctl.CustomerPresignGet)
 	r.Post("/uploads/presign", ctl.CustomerPresign)
 }
 
@@ -40,7 +44,37 @@ func (ctl *UploadController) CustomerPresign(c *fiber.Ctx) error {
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
-	return c.JSON(res)
+	return c.JSON(fiber.Map{
+		"upload_url": res.UploadURL,
+		"public_url": res.PublicURL,
+		"key":        res.Key,
+		"fields":     fiber.Map{},
+	})
+}
+
+// CustomerPresignGet is the spec-shaped GET variant.  Reads
+// content_type and filename from the query string; size is unknown
+// (clients can't supply it via GET) so we relax the validation.
+func (ctl *UploadController) CustomerPresignGet(c *fiber.Ctx) error {
+	req := uploadSvc.CustomerPresignRequest{
+		Filename:    c.Query("filename"),
+		ContentType: c.Query("content_type"),
+	}
+	if err := req.ValidateForGet(); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{"error": err.Error()})
+	}
+	// PresignCustomerAvatar enforces size internally only when set.
+	// Leave Size=0 — the upstream S3 PresignedPutURL doesn't need it.
+	res, err := ctl.svc.PresignCustomerAvatar(c.UserContext(), &req)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(fiber.Map{
+		"upload_url": res.UploadURL,
+		"public_url": res.PublicURL,
+		"key":        res.Key,
+		"fields":     fiber.Map{},
+	})
 }
 
 func (ctl *UploadController) Presign(c *fiber.Ctx) error {

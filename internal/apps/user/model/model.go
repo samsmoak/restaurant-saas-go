@@ -19,12 +19,16 @@ type User struct {
 }
 
 type SavedAddress struct {
-	ID      primitive.ObjectID `bson:"_id,omitempty" json:"id"`
-	Label   string             `bson:"label" json:"label"`
-	Address string             `bson:"address" json:"address"`
-	City    string             `bson:"city" json:"city"`
-	State   string             `bson:"state" json:"state"`
-	Zip     string             `bson:"zip" json:"zip"`
+	ID       primitive.ObjectID `bson:"_id,omitempty"      json:"id"`
+	Label    string             `bson:"label"              json:"label"`
+	Address  string             `bson:"address"            json:"address"`
+	City     string             `bson:"city"               json:"city"`
+	State    string             `bson:"state"              json:"state"`
+	Zip      string             `bson:"zip"                json:"zip"`
+	Lat      float64            `bson:"lat,omitempty"      json:"lat,omitempty"`
+	Lng      float64            `bson:"lng,omitempty"      json:"lng,omitempty"`
+	Floor    string             `bson:"floor,omitempty"    json:"floor,omitempty"`
+	Landmark string             `bson:"landmark,omitempty" json:"landmark,omitempty"`
 }
 
 type CustomerProfile struct {

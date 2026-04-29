@@ -16,6 +16,7 @@ import (
 	restaurantSvc "restaurantsaas/internal/apps/restaurant/service"
 	"restaurantsaas/internal/apps/reviews/model"
 	"restaurantsaas/internal/apps/reviews/repository"
+	userRepoPkg "restaurantsaas/internal/apps/user/repository"
 )
 
 var (
@@ -27,9 +28,13 @@ var (
 )
 
 type CreateRequest struct {
-	OrderID string `json:"order_id"`
-	Rating  int    `json:"rating"`
-	Comment string `json:"comment"`
+	OrderID       string   `json:"order_id"`
+	RestaurantID  string   `json:"restaurant_id"`
+	Rating        int      `json:"rating"`
+	Tags          []string `json:"tags"`
+	Comment       string   `json:"comment"`
+	Photos        []string `json:"photos"`
+	CourierThumbs string   `json:"courier_thumbs"`
 }
 
 type ReviewService interface {
@@ -38,13 +43,14 @@ type ReviewService interface {
 }
 
 type reviewService struct {
-	repo      *repository.ReviewRepository
-	orderRepo *orderRepoPkg.OrderRepository
-	restSvc   restaurantSvc.RestaurantService
+	repo        *repository.ReviewRepository
+	orderRepo   *orderRepoPkg.OrderRepository
+	profileRepo *userRepoPkg.CustomerProfileRepository
+	restSvc     restaurantSvc.RestaurantService
 }
 
-func NewReviewService(repo *repository.ReviewRepository, orderRepo *orderRepoPkg.OrderRepository, restSvc restaurantSvc.RestaurantService) ReviewService {
-	return &reviewService{repo: repo, orderRepo: orderRepo, restSvc: restSvc}
+func NewReviewService(repo *repository.ReviewRepository, orderRepo *orderRepoPkg.OrderRepository, profileRepo *userRepoPkg.CustomerProfileRepository, restSvc restaurantSvc.RestaurantService) ReviewService {
+	return &reviewService{repo: repo, orderRepo: orderRepo, profileRepo: profileRepo, restSvc: restSvc}
 }
 
 func (s *reviewService) Create(ctx context.Context, customerID primitive.ObjectID, req *CreateRequest) (*model.Review, error) {
@@ -69,13 +75,33 @@ func (s *reviewService) Create(ctx context.Context, customerID primitive.ObjectI
 		return nil, ErrOrderNotEligible
 	}
 
+	tags := dedupeStrings(req.Tags)
+	photos := dedupeStrings(req.Photos)
+	thumbs := strings.ToLower(strings.TrimSpace(req.CourierThumbs))
+	if thumbs != "" && thumbs != "up" && thumbs != "down" {
+		thumbs = ""
+	}
+
+	// Denormalise the reviewer's display name so list reads don't need
+	// a join to render it (BACKEND_REQUIREMENTS.md §4 expects user_name).
+	userName := ""
+	if s.profileRepo != nil {
+		if p, _ := s.profileRepo.FindByUserID(ctx, customerID); p != nil {
+			userName = strings.TrimSpace(p.FullName)
+		}
+	}
+
 	rv := &model.Review{
-		RestaurantID: order.RestaurantID,
-		OrderID:      orderID,
-		CustomerID:   customerID,
-		Rating:       req.Rating,
-		Comment:      strings.TrimSpace(req.Comment),
-		CreatedAt:    time.Now().UTC(),
+		RestaurantID:  order.RestaurantID,
+		OrderID:       orderID,
+		CustomerID:    customerID,
+		UserName:      userName,
+		Rating:        req.Rating,
+		Tags:          tags,
+		Comment:       strings.TrimSpace(req.Comment),
+		Photos:        photos,
+		CourierThumbs: thumbs,
+		CreatedAt:     time.Now().UTC(),
 	}
 	if _, err := s.repo.Insert(ctx, rv); err != nil {
 		if mongo.IsDuplicateKeyError(err) {
@@ -83,12 +109,30 @@ func (s *reviewService) Create(ctx context.Context, customerID primitive.ObjectI
 		}
 		return nil, fmt.Errorf("ReviewService.Create insert: %w", err)
 	}
+	rv.EnsureSlices()
 
 	// Best-effort recompute — don't fail the request on a recompute glitch.
 	if err := s.restSvc.RecomputeRatingAggregates(ctx, order.RestaurantID); err != nil {
 		log.Printf("ReviewService.Create: recompute aggregates: %v", err)
 	}
 	return rv, nil
+}
+
+func dedupeStrings(in []string) []string {
+	out := make([]string, 0, len(in))
+	seen := make(map[string]struct{}, len(in))
+	for _, v := range in {
+		v = strings.TrimSpace(v)
+		if v == "" {
+			continue
+		}
+		if _, ok := seen[v]; ok {
+			continue
+		}
+		seen[v] = struct{}{}
+		out = append(out, v)
+	}
+	return out
 }
 
 func (s *reviewService) ListForRestaurant(ctx context.Context, restaurantID primitive.ObjectID, limit, offset int64) ([]*model.Review, error) {
@@ -98,5 +142,12 @@ func (s *reviewService) ListForRestaurant(ctx context.Context, restaurantID prim
 	if offset < 0 {
 		offset = 0
 	}
-	return s.repo.ListForRestaurant(ctx, restaurantID, limit, offset)
+	rows, err := s.repo.ListForRestaurant(ctx, restaurantID, limit, offset)
+	if err != nil {
+		return nil, err
+	}
+	for _, r := range rows {
+		r.EnsureSlices()
+	}
+	return rows, nil
 }

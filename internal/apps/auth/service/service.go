@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -25,6 +26,42 @@ import (
 	"restaurantsaas/internal/oauth"
 )
 
+// MarshalJSON serialises AuthResponse so the embedded user object
+// also carries the spec-shaped `name` and `photo_url` fields without
+// touching the underlying User model (which the admin app reads).
+func (r *AuthResponse) MarshalJSON() ([]byte, error) {
+	type Alias AuthResponse
+	out := struct {
+		*Alias
+		UserExt map[string]any `json:"user,omitempty"`
+	}{Alias: (*Alias)(r)}
+	if r.User != nil {
+		raw, err := json.Marshal(r.User)
+		if err != nil {
+			return nil, err
+		}
+		var m map[string]any
+		if err := json.Unmarshal(raw, &m); err != nil {
+			return nil, err
+		}
+		// Spec aliases — additive, never replacing existing keys.
+		if _, ok := m["name"]; !ok {
+			m["name"] = r.User.FullName
+		}
+		if r.Profile != nil && r.Profile.PhotoURL != "" {
+			if _, ok := m["photo_url"]; !ok {
+				m["photo_url"] = r.Profile.PhotoURL
+			}
+		}
+		out.UserExt = m
+		// The Alias still carries User; clear it so we don't double-emit.
+		clone := *r
+		clone.User = nil
+		out.Alias = (*Alias)(&clone)
+	}
+	return json.Marshal(out)
+}
+
 type Membership struct {
 	RestaurantID   string `json:"restaurant_id"`
 	RestaurantName string `json:"restaurant_name"`
@@ -37,6 +74,10 @@ type AuthResponse struct {
 	Profile     *userModel.CustomerProfile `json:"profile,omitempty"`
 	IsAdmin     bool                       `json:"is_admin"`
 	Memberships []Membership               `json:"memberships"`
+	// IsNewUser flags first-time sign-ins so the Savorar client routes
+	// the user into Taste Profile setup (BACKEND_REQUIREMENTS.md §1).
+	// Defaults to false; only GoogleSignIn / SignupCustomer flip it on.
+	IsNewUser bool `json:"is_new_user"`
 }
 
 type AuthService interface {
@@ -140,6 +181,7 @@ func (s *authService) SignupCustomer(ctx context.Context, req *authModel.SignupR
 		Profile:     profile,
 		IsAdmin:     false,
 		Memberships: []Membership{},
+		IsNewUser:   true,
 	}, nil
 }
 
@@ -171,6 +213,7 @@ func (s *authService) GoogleSignIn(ctx context.Context, req *authModel.GoogleAut
 	if err != nil {
 		return nil, fmt.Errorf("AuthService.GoogleSignIn: %w", err)
 	}
+	createdNow := false
 	if user == nil {
 		byEmail, err := s.userRepo.FindByEmail(ctx, email)
 		if err != nil {
@@ -196,6 +239,7 @@ func (s *authService) GoogleSignIn(ctx context.Context, req *authModel.GoogleAut
 				return nil, fmt.Errorf("AuthService.GoogleSignIn: insert user: %w", err)
 			}
 			user = nu
+			createdNow = true
 		}
 	}
 
@@ -213,7 +257,12 @@ func (s *authService) GoogleSignIn(ctx context.Context, req *authModel.GoogleAut
 			profile = p
 		}
 	}
-	return s.buildAuthResponse(ctx, user)
+	resp, err := s.buildAuthResponse(ctx, user)
+	if err != nil {
+		return nil, err
+	}
+	resp.IsNewUser = createdNow
+	return resp, nil
 }
 
 func (s *authService) buildAuthResponse(ctx context.Context, user *userModel.User) (*AuthResponse, error) {

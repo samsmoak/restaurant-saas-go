@@ -38,7 +38,7 @@ func (ctl *OrderController) RegisterAdminRoutes(r fiber.Router) {
 
 func (ctl *OrderController) GetByNumber(c *fiber.Ctx) error {
 	n := c.Params("order_number")
-	order, err := ctl.svc.GetByNumber(c.UserContext(), n)
+	order, err := ctl.svc.GetByNumberPublic(c.UserContext(), n)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
@@ -60,12 +60,12 @@ func (ctl *OrderController) ListMine(c *fiber.Ctx) error {
 			restrictTo = &oid
 		}
 	}
-	rows, err := ctl.svc.ListForCustomer(c.UserContext(), uid, restrictTo)
+	rows, err := ctl.svc.ListForCustomerPublic(c.UserContext(), uid, restrictTo)
 	if err != nil {
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
 	}
 	if rows == nil {
-		rows = []*orderModel.Order{}
+		rows = []*orderModel.OrderPublicView{}
 	}
 	return c.JSON(fiber.Map{"orders": rows})
 }

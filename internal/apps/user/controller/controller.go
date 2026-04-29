@@ -20,6 +20,19 @@ func (ctl *UserController) RegisterMeRoutes(r fiber.Router) {
 	r.Get("/addresses", ctl.ListAddresses)
 	r.Post("/addresses", ctl.AddAddress)
 	r.Delete("/addresses/:id", ctl.RemoveAddress)
+	r.Get("/stats", ctl.GetStats)
+}
+
+func (ctl *UserController) GetStats(c *fiber.Ctx) error {
+	uid, _ := c.Locals("user_id").(string)
+	if uid == "" {
+		return c.Status(fiber.StatusUnauthorized).JSON(fiber.Map{"error": "not signed in"})
+	}
+	stats, err := ctl.svc.GetStats(c.UserContext(), uid)
+	if err != nil {
+		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{"error": err.Error()})
+	}
+	return c.JSON(stats)
 }
 
 func (ctl *UserController) GetProfile(c *fiber.Ctx) error {

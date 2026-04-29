@@ -11,6 +11,7 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/stretchr/testify/assert"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	"restaurantsaas/internal/apps/ai/controller"
 	"restaurantsaas/internal/apps/ai/parser"
@@ -34,6 +35,23 @@ func (f *fakeSvc) Search(ctx context.Context, req *aiSvc.SearchRequest) (*aiSvc.
 func (f *fakeSvc) Chat(ctx context.Context, req *aiSvc.ChatRequest) (*aiSvc.ChatResponse, error) {
 	f.lastChat = req
 	return f.chatResp, f.chatErr
+}
+
+// New SSE-era methods on AIService — stubbed so the test fake
+// satisfies the interface.  The controller_test only exercises the
+// legacy POST /search path.
+func (f *fakeSvc) ListDishes(ctx context.Context, query string, lat, lng *float64, taste *aiSvc.TasteFingerprint, filter aiSvc.DishFilter, limit int) []*aiSvc.Dish {
+	return nil
+}
+func (f *fakeSvc) GetDishByID(ctx context.Context, id primitive.ObjectID) (*aiSvc.Dish, error) {
+	return nil, nil
+}
+func (f *fakeSvc) Recommend(ctx context.Context, taste *aiSvc.TasteFingerprint, lat, lng *float64) []*aiSvc.Dish {
+	return nil
+}
+func (f *fakeSvc) HydrateDishes(ctx context.Context, ids []primitive.ObjectID) []any { return nil }
+func (f *fakeSvc) StreamChat(ctx context.Context, userID primitive.ObjectID, req *aiSvc.StreamChatRequest, emit func(any)) {
+	emit(map[string]any{"type": "answer", "text": "ok", "sources": []any{}, "dishes": []any{}})
 }
 
 func newApp(svc *fakeSvc) *fiber.App {
@@ -68,8 +86,6 @@ func TestSearch_HappyPath(t *testing.T) {
 }
 
 func TestSearch_EmptyQueryServiceErrorIs400(t *testing.T) {
-	// The controller surfaces service errors as 400 (the service returns an
-	// error only for bad input — graceful degradation otherwise).
 	svc := &fakeSvc{searchErr: errors.New("query is required")}
 	app := newApp(svc)
 
@@ -88,52 +104,17 @@ func TestSearch_InvalidJSONIs400(t *testing.T) {
 	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
 }
 
-// ── Chat ─────────────────────────────────────────────────────────────────
+// ── Chat (SSE) ────────────────────────────────────────────────────────────
 
-func TestChat_FallbackReplyIs200(t *testing.T) {
-	// Service contract: when LLM is unavailable, return 200 with a fallback
-	// reply (not 5xx). The controller forwards verbatim.
-	svc := &fakeSvc{chatResp: &aiSvc.ChatResponse{
-		Reply: "AI is unavailable right now — please try again later.",
-	}}
-	app := newApp(svc)
-
-	body := `{"messages":[{"role":"user","content":"hello"}]}`
+func TestChat_SSEContentType(t *testing.T) {
+	app := newApp(&fakeSvc{})
+	body := `{"message":"hello"}`
 	req := httptest.NewRequest("POST", "/ai/chat", strings.NewReader(body))
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := app.Test(req, -1)
 	assert.NoError(t, err)
 	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
-
-	out, _ := io.ReadAll(resp.Body)
-	var got map[string]any
-	_ = json.Unmarshal(out, &got)
-	assert.Contains(t, got["reply"], "unavailable")
-}
-
-func TestChat_HappyPath(t *testing.T) {
-	svc := &fakeSvc{chatResp: &aiSvc.ChatResponse{Reply: "Try the green curry."}}
-	app := newApp(svc)
-
-	body := `{"messages":[{"role":"user","content":"recommend thai"}]}`
-	req := httptest.NewRequest("POST", "/ai/chat", strings.NewReader(body))
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := app.Test(req, -1)
-	assert.NoError(t, err)
-	assert.Equal(t, fiber.StatusOK, resp.StatusCode)
-	assert.Equal(t, "user", svc.lastChat.Messages[0].Role)
-}
-
-func TestChat_BadShapeIs400(t *testing.T) {
-	// An empty messages array is the only error the chat service surfaces;
-	// fakeSvc forwards it as a 400 via the controller's BadRequest path.
-	svc := &fakeSvc{chatErr: errors.New("at least one message is required")}
-	app := newApp(svc)
-
-	req := httptest.NewRequest("POST", "/ai/chat", strings.NewReader(`{"messages":[]}`))
-	req.Header.Set("Content-Type", "application/json")
-	resp, _ := app.Test(req, -1)
-	assert.Equal(t, fiber.StatusBadRequest, resp.StatusCode)
+	assert.Equal(t, "text/event-stream", resp.Header.Get("Content-Type"))
 }
 
 func TestChat_InvalidJSONIs400(t *testing.T) {

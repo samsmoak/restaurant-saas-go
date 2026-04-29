@@ -7,11 +7,34 @@ import (
 	"log"
 	"strings"
 
+	"go.mongodb.org/mongo-driver/bson/primitive"
+
 	aiClient "restaurantsaas/internal/apps/ai/client"
 	"restaurantsaas/internal/apps/ai/parser"
+	cravingSvc "restaurantsaas/internal/apps/cravings/service"
 	discoveryModel "restaurantsaas/internal/apps/discovery/model"
 	discoverySvc "restaurantsaas/internal/apps/discovery/service"
+	menuModel "restaurantsaas/internal/apps/menu/model"
+	menuSvcPkg "restaurantsaas/internal/apps/menu/service"
+	restaurantSvc "restaurantsaas/internal/apps/restaurant/service"
+	tasteSvc "restaurantsaas/internal/apps/taste/service"
 )
+
+// MenuItemLookup is a back-channel the AI service uses to fetch a
+// menu item by id without knowing its restaurant up-front.  Wired
+// from routes.go via the menu repository's GetByID.
+type MenuItemLookup func(ctx context.Context, id primitive.ObjectID) (*menuModel.MenuItem, error)
+
+// TasteFingerprint is the parsed payload from
+// BACKEND_REQUIREMENTS.md §7 POST /api/ai/recommend.  All axes are
+// 0..10.  Missing fields default to 5.
+type TasteFingerprint struct {
+	Spice    int `json:"spice"`
+	Richness int `json:"richness"`
+	Acidity  int `json:"acidity"`
+	Carbs    int `json:"carbs"`
+	Citrus   int `json:"citrus"`
+}
 
 // fallbackChatReply is the deterministic response returned when no LLM is
 // configured. The Savorar Flutter app surfaces this string as-is.
@@ -59,15 +82,34 @@ type SearchResponse struct {
 type AIService interface {
 	Search(ctx context.Context, req *SearchRequest) (*SearchResponse, error)
 	Chat(ctx context.Context, req *ChatRequest) (*ChatResponse, error)
+	// Savor-AI methods (BACKEND_REQUIREMENTS.md §7).
+	ListDishes(ctx context.Context, query string, lat, lng *float64, taste *TasteFingerprint, filter DishFilter, limit int) []*Dish
+	GetDishByID(ctx context.Context, id primitive.ObjectID) (*Dish, error)
+	Recommend(ctx context.Context, taste *TasteFingerprint, lat, lng *float64) []*Dish
+	HydrateDishes(ctx context.Context, ids []primitive.ObjectID) []any
+	StreamChat(ctx context.Context, userID primitive.ObjectID, req *StreamChatRequest, emit func(any))
 }
 
 type aiService struct {
-	llm       aiClient.Client // may be nil when LLM_API_KEY unset
-	discovery discoverySvc.DiscoveryService
+	llm        aiClient.Client // may be nil when LLM_API_KEY unset
+	discovery  discoverySvc.DiscoveryService
+	menuSvc    menuSvcPkg.MenuService
+	restSvc    restaurantSvc.RestaurantService
+	taste      tasteSvc.TasteService
+	cravings   cravingSvc.CravingService
+	menuLookup MenuItemLookup
 }
 
-func NewAIService(llm aiClient.Client, discovery discoverySvc.DiscoveryService) AIService {
-	return &aiService{llm: llm, discovery: discovery}
+func NewAIService(llm aiClient.Client, discovery discoverySvc.DiscoveryService, menu menuSvcPkg.MenuService, rest restaurantSvc.RestaurantService, taste tasteSvc.TasteService, cravings cravingSvc.CravingService, menuLookup MenuItemLookup) AIService {
+	return &aiService{
+		llm:        llm,
+		discovery:  discovery,
+		menuSvc:    menu,
+		restSvc:    rest,
+		taste:      taste,
+		cravings:   cravings,
+		menuLookup: menuLookup,
+	}
 }
 
 // Search always parses the query rule-based first to produce a structured

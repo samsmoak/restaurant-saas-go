@@ -77,6 +77,7 @@ func (r *SettingsRequest) Validate() error {
 type RestaurantService interface {
 	Create(ctx context.Context, ownerID primitive.ObjectID, ownerEmail string, req *CreateRestaurantRequest) (*model.Restaurant, error)
 	GetByID(ctx context.Context, id primitive.ObjectID) (*model.Restaurant, error)
+	GetByIDs(ctx context.Context, ids []primitive.ObjectID) ([]*model.Restaurant, error)
 	ListMine(ctx context.Context, userID primitive.ObjectID) ([]*model.Restaurant, error)
 	Update(ctx context.Context, id primitive.ObjectID, req *SettingsRequest) (*model.Restaurant, error)
 	ToggleManualClosed(ctx context.Context, id primitive.ObjectID, closed bool) (*model.Restaurant, error)
@@ -131,6 +132,16 @@ func (s *restaurantService) Create(ctx context.Context, ownerID primitive.Object
 
 func (s *restaurantService) GetByID(ctx context.Context, id primitive.ObjectID) (*model.Restaurant, error) {
 	return s.repo.GetByID(ctx, id)
+}
+
+// GetByIDs batches a multi-restaurant lookup. Used by /api/me/orders to
+// hydrate restaurant_name + restaurant_logo_url onto each order without
+// N+1 queries.
+func (s *restaurantService) GetByIDs(ctx context.Context, ids []primitive.ObjectID) ([]*model.Restaurant, error) {
+	if len(ids) == 0 {
+		return []*model.Restaurant{}, nil
+	}
+	return s.repo.FindMany(ctx, bson.D{{Key: "_id", Value: bson.D{{Key: "$in", Value: ids}}}})
 }
 
 func (s *restaurantService) ListMine(ctx context.Context, userID primitive.ObjectID) ([]*model.Restaurant, error) {

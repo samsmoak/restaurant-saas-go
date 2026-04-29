@@ -37,8 +37,17 @@ func (f *fakeSvc) Remove(ctx context.Context, customerID, restaurantID primitive
 	f.lastRemoveCustomer = customerID
 	return f.removeErr
 }
-func (f *fakeSvc) List(ctx context.Context, customerID primitive.ObjectID) ([]*restaurantModel.PublicView, error) {
-	return f.listResult, f.listErr
+func (f *fakeSvc) AddDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error {
+	return nil
+}
+func (f *fakeSvc) RemoveDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error {
+	return nil
+}
+func (f *fakeSvc) List(ctx context.Context, customerID primitive.ObjectID) (*favoriteSvc.ListResult, error) {
+	if f.listErr != nil {
+		return nil, f.listErr
+	}
+	return &favoriteSvc.ListResult{Restaurants: f.listResult, DishIDs: []primitive.ObjectID{}}, nil
 }
 
 func newApp(svc *fakeSvc, signedInUserID string) *fiber.App {

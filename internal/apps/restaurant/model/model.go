@@ -4,6 +4,8 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
+
+	"restaurantsaas/internal/pkg/money"
 )
 
 type OpeningHoursDay struct {
@@ -57,6 +59,9 @@ type Restaurant struct {
 	Currency                 string                     `bson:"currency" json:"currency"`
 	OpeningHours             map[string]OpeningHoursDay `bson:"opening_hours" json:"opening_hours"`
 	ManualClosed             bool                       `bson:"manual_closed" json:"manual_closed"`
+	Featured                 bool                       `bson:"featured,omitempty" json:"featured"`
+	ServiceFeeBps            int                        `bson:"service_fee_bps,omitempty" json:"service_fee_bps,omitempty"`
+	TaxBps                   int                        `bson:"tax_bps,omitempty" json:"tax_bps,omitempty"`
 
 	OnboardingCompletedSteps []string                   `bson:"onboarding_completed_steps" json:"onboarding_completed_steps"`
 
@@ -76,6 +81,13 @@ type Restaurant struct {
 }
 
 // PublicView is what customers (anonymous) see.
+//
+// Money fields are emitted as both float USD (legacy customer/admin
+// Flutter clients) and integer cents (Savorar client per
+// BACKEND_REQUIREMENTS.md §10).  Likewise opening_hours is emitted
+// with both full-day keys (`monday`) and 3-letter aliases (`mon`)
+// under `opening_hours_short` so the new client can read whichever
+// form it prefers.
 type PublicView struct {
 	ID                    primitive.ObjectID         `json:"id"`
 	Name                  string                     `json:"name"`
@@ -87,12 +99,16 @@ type PublicView struct {
 	Longitude             float64                    `json:"longitude"`
 	Timezone              string                     `json:"timezone,omitempty"`
 	DeliveryFee           float64                    `json:"delivery_fee"`
+	DeliveryFeeCents      int64                      `json:"delivery_fee_cents"`
 	MinOrderAmount        float64                    `json:"min_order_amount"`
+	MinOrderCents         int64                      `json:"min_order_cents"`
 	EstimatedPickupTime   int                        `json:"estimated_pickup_time"`
 	EstimatedDeliveryTime int                        `json:"estimated_delivery_time"`
 	Currency              string                     `json:"currency"`
 	OpeningHours          map[string]OpeningHoursDay `json:"opening_hours"`
+	OpeningHoursShort     map[string]OpeningHoursDay `json:"opening_hours_short,omitempty"`
 	ManualClosed          bool                       `json:"manual_closed"`
+	Featured              bool                       `json:"featured"`
 
 	CuisineTags        []string `json:"cuisine_tags,omitempty"`
 	AverageRating      float64  `json:"average_rating"`
@@ -100,7 +116,38 @@ type PublicView struct {
 	AveragePrepMinutes int      `json:"average_prep_minutes,omitempty"`
 }
 
+// shortDayKey maps full day names ("monday") to their 3-letter
+// abbreviation ("mon") used by the Savorar client.  Anything that
+// isn't recognised is returned unchanged so already-short keys
+// pass through.
+func shortDayKey(k string) string {
+	switch k {
+	case "monday":
+		return "mon"
+	case "tuesday":
+		return "tue"
+	case "wednesday":
+		return "wed"
+	case "thursday":
+		return "thu"
+	case "friday":
+		return "fri"
+	case "saturday":
+		return "sat"
+	case "sunday":
+		return "sun"
+	}
+	return k
+}
+
 func (r *Restaurant) PublicView() *PublicView {
+	var short map[string]OpeningHoursDay
+	if len(r.OpeningHours) > 0 {
+		short = make(map[string]OpeningHoursDay, len(r.OpeningHours))
+		for k, v := range r.OpeningHours {
+			short[shortDayKey(k)] = v
+		}
+	}
 	return &PublicView{
 		ID:                    r.ID,
 		Name:                  r.Name,
@@ -112,12 +159,16 @@ func (r *Restaurant) PublicView() *PublicView {
 		Longitude:             r.Longitude,
 		Timezone:              r.Timezone,
 		DeliveryFee:           r.DeliveryFee,
+		DeliveryFeeCents:      money.ToCents(r.DeliveryFee),
 		MinOrderAmount:        r.MinOrderAmount,
+		MinOrderCents:         money.ToCents(r.MinOrderAmount),
 		EstimatedPickupTime:   r.EstimatedPickupTime,
 		EstimatedDeliveryTime: r.EstimatedDeliveryTime,
 		Currency:              r.Currency,
 		OpeningHours:          r.OpeningHours,
+		OpeningHoursShort:     short,
 		ManualClosed:          r.ManualClosed,
+		Featured:              r.Featured,
 		CuisineTags:           r.CuisineTags,
 		AverageRating:         r.AverageRating,
 		RatingCount:           r.RatingCount,

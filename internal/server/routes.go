@@ -10,6 +10,7 @@ import (
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 
 	adminCtrl "restaurantsaas/internal/apps/admin/controller"
 	adminRepoPkg "restaurantsaas/internal/apps/admin/repository"
@@ -21,12 +22,27 @@ import (
 	billingCtrl "restaurantsaas/internal/apps/billing/controller"
 	billingRepoPkg "restaurantsaas/internal/apps/billing/repository"
 	billingSvcPkg "restaurantsaas/internal/apps/billing/service"
+	cravingCtrl "restaurantsaas/internal/apps/cravings/controller"
+	cravingRepoPkg "restaurantsaas/internal/apps/cravings/repository"
+	cravingSvcPkg "restaurantsaas/internal/apps/cravings/service"
+	deviceCtrl "restaurantsaas/internal/apps/devices/controller"
+	deviceRepoPkg "restaurantsaas/internal/apps/devices/repository"
+	deviceSvcPkg "restaurantsaas/internal/apps/devices/service"
 	discoveryCtrl "restaurantsaas/internal/apps/discovery/controller"
 	discoveryRepoPkg "restaurantsaas/internal/apps/discovery/repository"
 	discoverySvcPkg "restaurantsaas/internal/apps/discovery/service"
 	favoriteCtrl "restaurantsaas/internal/apps/favorites/controller"
 	favoriteRepoPkg "restaurantsaas/internal/apps/favorites/repository"
 	favoriteSvcPkg "restaurantsaas/internal/apps/favorites/service"
+	groupCtrl "restaurantsaas/internal/apps/groups/controller"
+	groupRepoPkg "restaurantsaas/internal/apps/groups/repository"
+	groupSvcPkg "restaurantsaas/internal/apps/groups/service"
+	notifCtrl "restaurantsaas/internal/apps/notifications/controller"
+	notifRepoPkg "restaurantsaas/internal/apps/notifications/repository"
+	notifSvcPkg "restaurantsaas/internal/apps/notifications/service"
+	tasteCtrl "restaurantsaas/internal/apps/taste/controller"
+	tasteRepoPkg "restaurantsaas/internal/apps/taste/repository"
+	tasteSvcPkg "restaurantsaas/internal/apps/taste/service"
 	reviewCtrl "restaurantsaas/internal/apps/reviews/controller"
 	reviewRepoPkg "restaurantsaas/internal/apps/reviews/repository"
 	reviewSvcPkg "restaurantsaas/internal/apps/reviews/service"
@@ -41,6 +57,7 @@ import (
 	inviteRepoPkg "restaurantsaas/internal/apps/invite/repository"
 	inviteSvcPkg "restaurantsaas/internal/apps/invite/service"
 	menuCtrl "restaurantsaas/internal/apps/menu/controller"
+	menuModel "restaurantsaas/internal/apps/menu/model"
 	menuRepoPkg "restaurantsaas/internal/apps/menu/repository"
 	menuSvcPkg "restaurantsaas/internal/apps/menu/service"
 	orderCtrl "restaurantsaas/internal/apps/order/controller"
@@ -48,6 +65,8 @@ import (
 	orderSvcPkg "restaurantsaas/internal/apps/order/service"
 	paymentCtrl "restaurantsaas/internal/apps/payment/controller"
 	paymentSvcPkg "restaurantsaas/internal/apps/payment/service"
+	promoRepoPkg "restaurantsaas/internal/apps/promos/repository"
+	promoSvcPkg "restaurantsaas/internal/apps/promos/service"
 	restaurantCtrl "restaurantsaas/internal/apps/restaurant/controller"
 	restaurantRepoPkg "restaurantsaas/internal/apps/restaurant/repository"
 	restaurantSvcPkg "restaurantsaas/internal/apps/restaurant/service"
@@ -107,7 +126,17 @@ func RegisterRoutes(srv *FiberServer) {
 	inviteService := inviteSvcPkg.NewInviteService(inviteRepo, restRepo)
 	categoryService := categorySvcPkg.NewCategoryService(catRepo)
 	menuService := menuSvcPkg.NewMenuService(menuRepo, catRepo)
-	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub, restService)
+	promoRepo := promoRepoPkg.NewPromoRepository(srv.DB)
+	promoService := promoSvcPkg.NewPromoService(promoRepo)
+	// Best-effort seed; only runs if PROMO_WELCOME10_PERCENT or its
+	// default flips on a row that doesn't exist yet.
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		promoService.SeedFromEnv(ctx)
+	}()
+
+	orderService := orderSvcPkg.NewOrderService(orderRepo, menuService, restService, srv.Hub, restService, promoService, profileRepo)
 	billingRepo := billingRepoPkg.NewBillingRepository(srv.DB)
 	billingService := billingSvcPkg.NewBillingService(billingRepo, restRepo)
 	paymentService := paymentSvcPkg.NewPaymentService(orderService, profileRepo, billingService)
@@ -117,7 +146,23 @@ func RegisterRoutes(srv *FiberServer) {
 	leadsController := leadsCtrl.New(leadsService)
 	discoveryService := discoverySvcPkg.NewDiscoveryService(discoveryRepo)
 	favoriteService := favoriteSvcPkg.NewFavoriteService(favoriteRepo, restRepo)
-	reviewService := reviewSvcPkg.NewReviewService(reviewRepo, orderRepo, restService)
+	reviewService := reviewSvcPkg.NewReviewService(reviewRepo, orderRepo, profileRepo, restService)
+
+	// Savor-AI side apps + their dependencies.
+	tasteRepo := tasteRepoPkg.NewTasteRepository(srv.DB)
+	tasteService := tasteSvcPkg.NewTasteService(tasteRepo)
+	cravingRepo := cravingRepoPkg.NewCravingRepository(srv.DB)
+	cravingService := cravingSvcPkg.NewCravingService(cravingRepo)
+	notifRepo := notifRepoPkg.NewNotificationRepository(srv.DB)
+	notifService := notifSvcPkg.NewNotificationService(notifRepo)
+	deviceRepo := deviceRepoPkg.NewDeviceRepository(srv.DB)
+	deviceService := deviceSvcPkg.NewDeviceService(deviceRepo)
+	groupRepo := groupRepoPkg.NewGroupRepository(srv.DB)
+	groupService := groupSvcPkg.NewGroupService(groupRepo, orderService, restService, profileRepo)
+
+	// Stats endpoint depends on three repos that aren't in
+	// userService's constructor; wire them out-of-band.
+	userSvcPkg.SetStatsDeps(userService, orderRepo, favoriteRepo, reviewRepo)
 
 	// LLM client is optional. FromEnv returns nil when LLM_API_KEY is unset
 	// — the AI service handles nil by falling back to rule-based intent
@@ -127,7 +172,10 @@ func RegisterRoutes(srv *FiberServer) {
 		log.Printf("restaurantsaas: LLM client init: %v (AI endpoints will use fallback)", err)
 		llm = nil
 	}
-	aiService := aiSvcPkg.NewAIService(llm, discoveryService)
+	menuLookup := func(ctx context.Context, id primitive.ObjectID) (*menuModel.MenuItem, error) {
+		return menuRepo.GetByID(ctx, id)
+	}
+	aiService := aiSvcPkg.NewAIService(llm, discoveryService, menuService, restService, tasteService, cravingService, menuLookup)
 
 	// Controllers
 	authController := authCtrl.New(authService)
@@ -145,6 +193,15 @@ func RegisterRoutes(srv *FiberServer) {
 	favoriteController := favoriteCtrl.New(favoriteService)
 	reviewController := reviewCtrl.New(reviewService)
 	aiController := aiCtrl.New(aiService)
+	tasteController := tasteCtrl.New(tasteService)
+	cravingController := cravingCtrl.New(cravingService)
+	notifController := notifCtrl.New(notifService)
+	deviceController := deviceCtrl.New(deviceService)
+	groupController := groupCtrl.New(groupService)
+	// Wire the AI dish hydrator into favorites so the {dishes:[]} arm
+	// of GET /api/me/favorites is populated. Done here to avoid a
+	// circular import between favorites and AI.
+	favoriteController.SetDishHydrator(aiService.HydrateDishes)
 
 	api := srv.App.Group("/api")
 
@@ -167,12 +224,26 @@ func RegisterRoutes(srv *FiberServer) {
 	favoriteController.RegisterMeRoutes(me)
 	reviewController.RegisterMeRoutes(me)
 	uploadController.RegisterMeRoutes(me)
+	tasteController.RegisterMeRoutes(me)
+	notifController.RegisterMeRoutes(me)
+	deviceController.RegisterMeRoutes(me)
 
-	// AI: /api/ai/* — /search is public (signed-in caller is optional and
-	// only used to bias geo); /chat requires JWT per spec.
+	// AI: /api/ai/* — /search (POST) is public so the legacy customer
+	// app keeps working; the GET dishes-shape variant + dish detail +
+	// recommend are also public (the Savorar client passes JWT
+	// optionally for geo bias).  /chat (SSE) and /cravings/* require
+	// JWT per spec.
 	aiPublic := api.Group("/ai", middleware.OptionalJWTAuth())
 	aiPublic.Post("/search", aiController.Search)
+	aiPublic.Get("/search", aiController.SearchDishes)
+	aiPublic.Post("/recommend", aiController.Recommend)
+	aiPublic.Get("/dishes/:id", aiController.DishByID)
 	api.Post("/ai/chat", middleware.JWTAuth(), aiController.Chat)
+	cravingController.RegisterAIRoutes(api.Group("/ai", middleware.JWTAuth()))
+
+	// Group order endpoints (BACKEND_REQUIREMENTS.md §9).
+	groups := api.Group("/groups", middleware.JWTAuth())
+	groupController.RegisterRoutes(groups)
 
 	// Public leads endpoint (no auth)
 	leadsController.RegisterRoutes(api)

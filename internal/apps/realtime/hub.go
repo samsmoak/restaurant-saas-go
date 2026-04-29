@@ -105,3 +105,24 @@ func (h *Hub) BroadcastOrder(orderNumber string, ev Event) {
 		}
 	}
 }
+
+// BroadcastOrderRaw fans out an arbitrary JSON-shaped payload (no
+// Event wrapper) to all customer-side subscribers of a specific order
+// number. This is what BACKEND_REQUIREMENTS.md §5 calls for: frames
+// shaped like {"type":"status",...}, {"type":"courier",...},
+// {"type":"delivered",...}. The legacy admin event firehose still
+// uses BroadcastOrder/BroadcastAdmin with the wrapped shape.
+func (h *Hub) BroadcastOrderRaw(orderNumber string, payload any) {
+	h.mu.RLock()
+	subs := h.orderSubs[orderNumber]
+	targets := make([]*websocket.Conn, 0, len(subs))
+	for c := range subs {
+		targets = append(targets, c)
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
+		if err := c.WriteJSON(payload); err != nil {
+			log.Printf("Hub.BroadcastOrderRaw: write: %v", err)
+		}
+	}
+}

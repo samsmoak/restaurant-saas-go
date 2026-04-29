@@ -111,9 +111,19 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 			{Keys: bson.D{{Key: "submitted_at", Value: -1}}},
 		},
 		"favorites": {
+			// Unique restaurant favorite per customer.  Partial filter so
+			// the dish-favorite rows (which have no restaurant_id field)
+			// don't collide with this constraint.
 			{
-				Keys:    bson.D{{Key: "customer_id", Value: 1}, {Key: "restaurant_id", Value: 1}},
-				Options: options.Index().SetUnique(true),
+				Keys: bson.D{{Key: "customer_id", Value: 1}, {Key: "restaurant_id", Value: 1}},
+				Options: options.Index().SetUnique(true).
+					SetPartialFilterExpression(bson.D{{Key: "restaurant_id", Value: bson.D{{Key: "$exists", Value: true}}}}),
+			},
+			// Unique dish favorite per customer (BACKEND_REQUIREMENTS.md §6).
+			{
+				Keys: bson.D{{Key: "customer_id", Value: 1}, {Key: "menu_item_id", Value: 1}},
+				Options: options.Index().SetUnique(true).
+					SetPartialFilterExpression(bson.D{{Key: "menu_item_id", Value: bson.D{{Key: "$exists", Value: true}}}}),
 			},
 			{Keys: bson.D{{Key: "customer_id", Value: 1}, {Key: "created_at", Value: -1}}},
 		},
@@ -131,6 +141,45 @@ func EnsureIndexes(ctx context.Context, db *mongo.Database) error {
 				Options: options.Index().SetUnique(true),
 			},
 			{Keys: bson.D{{Key: "restaurant_id", Value: 1}, {Key: "period_start", Value: -1}}},
+		},
+		// Savor-AI + customer side collections (BACKEND_REQUIREMENTS.md
+		// §§7–9).  Each app's repository writes to one of these.
+		"taste_profiles": {
+			{
+				Keys:    bson.D{{Key: "user_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+		"cravings": {
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "pinned", Value: -1}, {Key: "created_at", Value: -1}}},
+		},
+		"notifications": {
+			{Keys: bson.D{{Key: "user_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		"devices": {
+			{
+				Keys:    bson.D{{Key: "fcm_token", Value: 1}, {Key: "user_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+		"groups": {
+			{
+				Keys:    bson.D{{Key: "share_code", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+			{Keys: bson.D{{Key: "host_user_id", Value: 1}, {Key: "created_at", Value: -1}}},
+		},
+		"group_members": {
+			{
+				Keys:    bson.D{{Key: "group_id", Value: 1}, {Key: "user_id", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
+		},
+		"promos": {
+			{
+				Keys:    bson.D{{Key: "code", Value: 1}},
+				Options: options.Index().SetUnique(true),
+			},
 		},
 	}
 	for coll, models := range specs {

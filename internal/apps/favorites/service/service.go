@@ -13,12 +13,26 @@ import (
 	restaurantRepoPkg "restaurantsaas/internal/apps/restaurant/repository"
 )
 
-var ErrRestaurantNotFound = errors.New("restaurant not found")
+var (
+	ErrRestaurantNotFound = errors.New("restaurant not found")
+	ErrDishNotFound       = errors.New("dish not found")
+)
+
+// ListResult bundles both arms of the favorites response. The dishes
+// slice is left untyped (interface{}) because dish hydration happens
+// in the AI service to keep the import direction one-way (favorites
+// stays free of any AI dependency).
+type ListResult struct {
+	Restaurants []*restaurantModel.PublicView `json:"restaurants"`
+	DishIDs     []primitive.ObjectID          `json:"-"` // hydrated by aiService.HydrateDishes
+}
 
 type FavoriteService interface {
 	Add(ctx context.Context, customerID, restaurantID primitive.ObjectID) error
 	Remove(ctx context.Context, customerID, restaurantID primitive.ObjectID) error
-	List(ctx context.Context, customerID primitive.ObjectID) ([]*restaurantModel.PublicView, error)
+	AddDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error
+	RemoveDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error
+	List(ctx context.Context, customerID primitive.ObjectID) (*ListResult, error)
 }
 
 type favoriteService struct {
@@ -48,12 +62,27 @@ func (s *favoriteService) Remove(ctx context.Context, customerID, restaurantID p
 	return s.repo.Remove(ctx, customerID, restaurantID)
 }
 
-func (s *favoriteService) List(ctx context.Context, customerID primitive.ObjectID) ([]*restaurantModel.PublicView, error) {
+// AddDish saves a menu_item favorite. We don't validate the dish
+// exists here because doing so would require a menu service injection
+// — the unique partial index keeps duplicate rows out, and a stale
+// favorite is filtered out at hydrate time.
+func (s *favoriteService) AddDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error {
+	if _, err := s.repo.AddDish(ctx, customerID, menuItemID); err != nil {
+		return fmt.Errorf("FavoriteService.AddDish: %w", err)
+	}
+	return nil
+}
+
+func (s *favoriteService) RemoveDish(ctx context.Context, customerID, menuItemID primitive.ObjectID) error {
+	return s.repo.RemoveDish(ctx, customerID, menuItemID)
+}
+
+func (s *favoriteService) List(ctx context.Context, customerID primitive.ObjectID) (*ListResult, error) {
 	rows, err := s.repo.ListForCustomer(ctx, customerID)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]*restaurantModel.PublicView, 0, len(rows))
+	restaurants := make([]*restaurantModel.PublicView, 0, len(rows))
 	for _, row := range rows {
 		raw, err := bson.Marshal(row)
 		if err != nil {
@@ -63,7 +92,12 @@ func (s *favoriteService) List(ctx context.Context, customerID primitive.ObjectI
 		if err := bson.Unmarshal(raw, &r); err != nil {
 			continue
 		}
-		out = append(out, r.PublicView())
+		restaurants = append(restaurants, r.PublicView())
 	}
-	return out, nil
+	dishIDs, err := s.repo.ListDishIDs(ctx, customerID)
+	if err != nil {
+		// Don't fail the whole call when only the dish leg breaks.
+		dishIDs = []primitive.ObjectID{}
+	}
+	return &ListResult{Restaurants: restaurants, DishIDs: dishIDs}, nil
 }
